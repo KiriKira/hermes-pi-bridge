@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .parsers import EventType, parse_event
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -41,7 +43,7 @@ class PiRpcSession:
     _proc: Optional[subprocess.Popen] = field(default=None, repr=False)
 
     # Accumulated events and text from pi
-    _event_buffer: List[dict] = field(default_factory=list, repr=False)
+    _event_buffer: List = field(default_factory=list, repr=False)
     _text_buffer: str = field(default="", repr=False)      # assistant text so far this session
     _turn_text: str = field(default="", repr=False)        # text for the current/last turn
     _turn_done: bool = field(default=False, repr=False)    # True when current prompt is complete
