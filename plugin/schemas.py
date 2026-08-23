@@ -1,18 +1,26 @@
 """Function-calling schemas for the Hermes -> pi bridge tools."""
 
 _COMMON_MODEL_PROPERTIES = {
+    "effort": {
+        "type": "string",
+        "enum": ["fast", "standard", "deep"],
+        "description": (
+            "Semantic cost/reasoning tier. The bridge resolves this through the "
+            "current Hermes profile's pi-bridge plugin settings. Explicit model/provider/thinking overrides win."
+        ),
+    },
     "model": {
         "type": "string",
-        "description": "Optional pi model ID/pattern override. Omit to use pi's configured default.",
+        "description": "Optional pi model ID/pattern override. Omit to use the effort mapping or pi default.",
     },
     "provider": {
         "type": "string",
-        "description": "Optional pi provider override. Omit to use pi's configured default.",
+        "description": "Optional pi provider override. Omit to use the effort mapping or pi default.",
     },
     "thinking": {
         "type": "string",
         "enum": ["off", "minimal", "low", "medium", "high", "xhigh"],
-        "description": "Optional reasoning depth override.",
+        "description": "Optional reasoning depth override. Explicit values override the effort mapping.",
     },
     "tools": {
         "type": "string",
@@ -30,7 +38,10 @@ _COMMON_MODEL_PROPERTIES = {
 
 PI_CHECK_SCHEMA = {
     "name": "pi_check",
-    "description": "Check whether pi is installed and report basic local configuration state.",
+    "description": (
+        "Check whether pi is installed and report basic local configuration state, "
+        "including configured fast/standard/deep routing for this Hermes profile."
+    ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
