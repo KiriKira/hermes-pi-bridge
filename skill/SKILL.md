@@ -1,14 +1,14 @@
 ---
 name: pi-task-delegation
-description: Delegate focused coding tasks to pi coding agent
-version: 1.0.0
+description: Delegate focused coding and analysis tasks to pi coding agent
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [delegation, pi, coding, implementation, refactor, debugging, testing]
+    tags: [delegation, pi, coding, implementation, refactor, debugging, testing, analysis]
     requires_tools: [pi_task, pi_task_async]
-    related_skills: [pi-interactive-session]
+    related_skills: [pi-interactive-session, pi-bootstrap, pi-reverse-engineering-flow]
 ---
 
 # Pi Task Delegation
@@ -17,127 +17,137 @@ metadata:
 
 Hermes orchestrates. pi executes.
 
-pi is a full coding agent running the local Qwen3-Coder-30B model. It has read, write, edit, bash, grep, find, and ls tools — it can read/write files, run shell commands, install packages, run tests, and iterate on errors. Hermes' role is to delegate clearly, assess what comes back, and decide next steps.
+Pi is a model-agnostic terminal coding agent with filesystem and shell tools. The bridge can select provider/model/thinking per task, so do not assume a specific local or cloud model.
 
-**Use `pi_task` for focused, well-defined tasks where a single prompt is enough.**
-**Use `pi_session_start` for large multi-phase projects — see the pi-interactive-session skill.**
+Use `pi_task` for focused, well-defined work where a single prompt is enough. Use `pi_session_start` for large multi-phase projects. For authorized reverse engineering, load `pi-reverse-engineering-flow` before delegating.
 
----
+## Model-tier routing
+
+If `~/.hermes/pi-bridge-models.yaml` exists, read it before choosing a worker model. Use the cheapest suitable tier:
+
+| Tier | Typical work |
+|---|---|
+| fast | search, grep, inventory, formatting, straightforward extraction |
+| code | implementation, scripts, parsers, tests, debugging |
+| deep | difficult reasoning, conflicting evidence, protocol/crypto/state-machine analysis |
+
+Pass non-empty `provider`, `model`, and `thinking` values from that tier to the tool call. If provider/model are blank, let pi use its configured default. Escalate only when justified by evidence or failure.
 
 ## When to Delegate
 
-### Use pi_task when:
-| Signal | Examples |
-|--------|---------|
-| Single focused change | "Add input validation to the signup endpoint" |
-| Specific bug fix | "Fix the off-by-one error in pagination.py line 47" |
-| Well-scoped feature | "Add a /health endpoint to the Flask app" |
-| Write tests for known code | "Write pytest tests for the User model" |
-| Refactor a single file | "Refactor utils.py to use dataclasses" |
-| Task < 5 min | Small edits, quick implementations |
+### Use pi_task when
 
-### Use pi_session_start instead when:
-- Multiple components or phases involved
-- "don't stop", "continue until done", "build the whole thing"
-- Scope is unclear and needs iterative guidance
-- Work > 5-10 minutes or > 3-4 files
+- one focused change or analysis task;
+- a specific bug fix;
+- a well-scoped feature;
+- tests for known code;
+- a single-file/small refactor;
+- a bounded read/search/extract task.
 
----
+### Use pi_session_start instead when
+
+- multiple components or phases are involved;
+- the user asks to continue until done;
+- the next step depends on reviewing the previous result;
+- the scope is exploratory;
+- reverse engineering requires repeated hypothesis/experiment cycles.
 
 ## Step 1 — Gather Context
 
 Before calling `pi_task`, collect:
-1. `working_dir` — absolute path, always required
-2. Relevant files — read key files, summarise in the prompt
-3. Constraints — language version, framework, test runner, conventions
-4. Verification — command to confirm it worked
 
----
+1. `working_dir` — use an absolute path when project files are involved;
+2. relevant files/artifacts and what they represent;
+3. constraints — language/version/framework/safety scope;
+4. verification — a command, observable result, or evidence requirement.
+
+For reverse engineering, do not paste bulk decompiler output into Hermes when pi can inspect it directly and return an evidence-backed summary.
 
 ## Step 2 — Choose Sync vs Async
 
-| Use `pi_task` (sync) | Use `pi_task_async` (async) |
-|----------------------|------------------------------|
-| Task likely < 5 min | Task likely > 5 min |
-| Quick bug fix | Large refactor |
-| Single focused change | Full test suite run |
+Use `pi_task` for bounded tasks. Use `pi_task_async` only when background execution is genuinely useful and the surrounding Hermes environment supports the completion notification flow. For an iterative project, prefer an interactive RPC session instead of repeatedly launching disconnected async tasks.
 
----
+## Step 3 — Choose Thinking/Model Tier
 
-## Step 3 — Choose Thinking Level
+Start cheap and escalate:
 
-| Default (no thinking flag) | Use thinking=high/xhigh |
-|---------------------------|--------------------------|
-| Straightforward implementation | Complex algorithm design |
-| Clear spec, just needs coding | Subtle debugging |
-| Routine refactor | Multi-step architectural decisions |
+- straightforward extraction/search -> fast;
+- implementation/debugging -> code;
+- difficult ambiguity/cross-layer reasoning -> deep.
 
----
+Do not spend a deep model on bulk grep, file listing, or formatting.
 
 ## Step 4 — Construct the Prompt
 
-Always include all four parts:
+Include four parts:
 
-```
+```text
 [TASK]
-One clear sentence: what to build or fix.
+One clear outcome.
 
 [CONTEXT]
-- Working directory: /absolute/path
-- Relevant files and their purpose
-- Framework/language/version
-- Conventions to follow
+- Working directory/artifacts
+- Relevant files and prior findings
+- Framework/tooling/environment
+- Authorization/safety scope if applicable
 
 [REQUIREMENTS]
-- Explicit list of what must be true when done
-- File paths, functions, behaviours required
-- Constraints (no new deps, keep tests passing, etc.)
+- Explicit completion conditions
+- Constraints
+- Required evidence or files to update
 
 [VERIFICATION]
-- Exact command to confirm success
-- Expected output or exit code
+- Exact command/test/experiment or evidence standard
 ```
 
----
+For research tasks, also request this result contract when useful:
+
+```text
+CONFIDENCE: high|medium|low
+FINDINGS:
+EVIDENCE:
+OPEN_QUESTIONS:
+BLOCKERS:
+RECOMMENDED_NEXT_STEP:
+REQUEST_ESCALATION: none|code|deep
+```
 
 ## Step 5 — Call pi_task
 
+Example:
+
 ```python
 pi_task(
-    prompt="<four-part prompt>",
+    prompt="<structured prompt>",
     working_dir="/absolute/path",
-    # thinking="high"       # only for complex reasoning
-    # timeout=300           # increase for long tasks
+    provider="<tier provider if non-empty>",
+    model="<tier model if non-empty>",
+    thinking="<tier thinking if configured>",
 )
 ```
 
----
+Omit provider/model instead of inventing values when a tier leaves them blank.
 
 ## Step 6 — Assess the Output
 
-When `pi_task` returns (or inject_message fires for async):
+Check:
 
-- [ ] Did the result contain actual code/output, not just an error?
-- [ ] Does output address ALL requirements?
-- [ ] Run the verification command yourself if pi didn't
-- Watch for: "I couldn't", "TODO", "placeholder", error tracebacks without a fix
+- Did pi actually complete the requested work?
+- Does the result address every requirement?
+- Is verification present and credible?
+- For research, are conclusions tied to evidence rather than asserted?
+- Are there TODOs/placeholders/unresolved errors?
+- Is confidence low or escalation requested?
 
-### Decide next action:
-| Assessment | Action |
-|------------|--------|
-| Complete and verified | Report to user |
-| Partially complete | Call pi_task again with specific gap |
-| pi hit an error | Call pi_task with error context and fix instruction |
-| Wrong approach | Rewrite prompt with corrected direction |
-| Timed out | Break into smaller tasks |
-
----
+Then choose: accept, send a focused follow-up, correct direction, escalate tier, or switch to an interactive session.
 
 ## Red Flags
 
-- Delegate without `working_dir`
-- Accept output without verification
-- Pass a vague prompt
-- Use pi_task for a multi-phase project (use pi_session_start)
+- vague delegation without artifacts/context;
+- accepting output without verification;
+- using an expensive model for bulk mechanical work;
+- using one-shot tasks for a hypothesis/experiment loop;
+- assuming a specific pi model is installed;
+- exposing credentials/secrets in prompts or repository files.
 
-**pi executes. Hermes judges. The user gets verified, working code.**
+Pi executes. Hermes judges. The user gets verified results.
