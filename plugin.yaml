@@ -1,0 +1,24 @@
+manifest_version: 2
+api_version: 1
+name: pi-bridge
+version: 1.2.0
+description: "Hermes plugin for delegating execution to pi and orchestrating goal-specific pi_flow workflows"
+author: hermes-pi-bridge
+license: MIT
+homepage: https://github.com/KiriKira/hermes-pi-bridge
+tags:
+  - pi
+  - delegation
+  - orchestration
+  - coding-agent
+provides_tools:
+  - pi_check
+  - pi_task
+  - pi_session_start
+  - pi_session_send
+  - pi_session_read
+  - pi_session_stop
+  - pi_session_list
+provides_hooks:
+  - pre_llm_call
+  - on_session_end
