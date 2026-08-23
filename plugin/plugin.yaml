@@ -1,17 +1,13 @@
 name: pi-bridge
-version: 1.0.0
-description: "Bridge between Hermes Agent and pi coding agent — delegate coding tasks and drive interactive sessions"
+version: 1.1.0
+description: "Hermes bridge for delegating execution to pi and orchestrating pi_flow workflows"
 author: hermes-pi-bridge
 provides_tools:
-  - pi_task
-  - pi_task_async
-  - pi_task_status
-  - pi_task_result
   - pi_check
+  - pi_task
   - pi_session_start
   - pi_session_send
   - pi_session_read
-  - pi_session_wait
   - pi_session_stop
   - pi_session_list
 provides_hooks:
