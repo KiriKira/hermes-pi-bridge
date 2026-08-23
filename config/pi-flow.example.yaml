@@ -1,0 +1,28 @@
+# Installed as ~/.hermes/pi-flow.yaml when no user config exists.
+# This file contains routing preferences only. Never store API keys here.
+# Blank provider/model values mean: let pi use its configured default.
+
+version: 1
+
+routing:
+  prefer_cheapest_suitable: true
+  escalate_on:
+    - low-confidence
+    - contradictory-evidence
+    - repeated-reasoning-failure
+    - unresolved-material-hypotheses
+
+fast:
+  provider: ""
+  model: ""
+  thinking: minimal
+
+standard:
+  provider: ""
+  model: ""
+  thinking: medium
+
+deep:
+  provider: ""
+  model: ""
+  thinking: high
