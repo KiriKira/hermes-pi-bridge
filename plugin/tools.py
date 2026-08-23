@@ -27,14 +27,7 @@ def set_context_ref(ctx) -> None:
 
 
 def _pi_subprocess_env() -> dict[str, str]:
-    """Build a child environment using Hermes' own secret-filtering policy.
-
-    Current Hermes exposes the same helper used by its first-party Codex
-    app-server runtime: provider credentials may flow to model-driving CLIs,
-    while Hermes-internal/gateway secrets are stripped. The fallback preserves
-    compatibility with older Hermes releases but is intentionally loud because
-    those releases do not expose the centralized filter.
-    """
+    """Build a child environment using Hermes' own secret-filtering policy."""
     try:
         from tools.environments.local import hermes_subprocess_env
 
@@ -85,11 +78,7 @@ def _routing_for_effort(effort: str) -> dict[str, str]:
 
 
 def _apply_effort_defaults(args_dict: dict) -> dict:
-    """Resolve a semantic effort tier through profile-scoped plugin settings.
-
-    Explicit provider/model/thinking parameters always win. The effort tier is
-    therefore a convenient policy input, not an override of a deliberate call.
-    """
+    """Resolve a semantic effort tier through profile-scoped plugin settings."""
     effective = dict(args_dict)
     effort = str(effective.get("effort") or "").strip().lower()
     if not effort:
@@ -103,6 +92,51 @@ def _apply_effort_defaults(args_dict: dict) -> dict:
         if not effective.get(key) and configured.get(key):
             effective[key] = configured[key]
     return effective
+
+
+def _gateway_delivery_state() -> dict:
+    """Return Hermes' current async-delivery/gateway-injection state.
+
+    The values come from Hermes' session ContextVars, so concurrent gateway
+    sessions do not leak routing identities into each other.
+    """
+    state = {
+        "async_delivery_supported": True,
+        "messaging_surface": False,
+        "session_key": "",
+        "gateway_injection_allowed": True,
+    }
+    try:
+        from gateway.session_context import (
+            async_delivery_supported,
+            get_session_env,
+            session_is_messaging_surface,
+        )
+
+        state["async_delivery_supported"] = bool(async_delivery_supported())
+        state["messaging_surface"] = bool(session_is_messaging_surface())
+        state["session_key"] = str(get_session_env("HERMES_SESSION_KEY", "") or "")
+    except (ImportError, AttributeError):
+        return state
+
+    if not state["messaging_surface"]:
+        return state
+
+    # PluginContext.inject_message intentionally requires a separate explicit
+    # gateway-injection grant. Read only that documented plugin-entry flag so
+    # pi_session_send can fail before promising a completion it cannot deliver.
+    state["gateway_injection_allowed"] = False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        entries = ((config.get("plugins") or {}).get("entries") or {})
+        plugin_id = getattr(_ctx_ref, "plugin_id", "pi-bridge") if _ctx_ref else "pi-bridge"
+        entry = entries.get(plugin_id) or {}
+        state["gateway_injection_allowed"] = entry.get("allow_gateway_injection") is True
+    except Exception:
+        pass
+    return state
 
 
 def _find_pi() -> Optional[str]:
@@ -233,6 +267,11 @@ def pi_check(args: dict, **kwargs) -> str:
     info["effort_routing"] = {
         effort: _routing_for_effort(effort) for effort in _EFFORTS
     }
+    delivery = _gateway_delivery_state()
+    info["async_delivery_supported"] = delivery["async_delivery_supported"]
+    info["gateway_injection_allowed"] = (
+        delivery["gateway_injection_allowed"] if delivery["messaging_surface"] else None
+    )
 
     from .rpc_session import active_session_count
 
@@ -352,12 +391,28 @@ def pi_session_send(args: dict, **kwargs) -> str:
     if not message:
         return json.dumps({"error": "message is required"})
 
+    delivery = _gateway_delivery_state()
+    if not delivery["async_delivery_supported"]:
+        return json.dumps({
+            "error": "This Hermes runtime cannot deliver an asynchronous pi completion after the current turn.",
+            "fix": "Use pi_task for this phase, or run the flow in an interactive CLI/gateway session.",
+        })
+    if delivery["messaging_surface"] and not delivery["gateway_injection_allowed"]:
+        return json.dumps({
+            "error": "Gateway completion injection is not authorized for pi-bridge.",
+            "fix": (
+                "Grant plugins.entries.pi-bridge.allow_gateway_injection=true in this Hermes profile, "
+                "or use pi_task instead of a persistent asynchronous session."
+            ),
+        })
+
     from .rpc_session import send_message
 
     return json.dumps(send_message(
         session_id=session_id,
         message=message,
         streaming_behavior=args.get("streaming_behavior", "followUp"),
+        completion_session_key=delivery["session_key"] or None,
     ), ensure_ascii=False)
 
 
