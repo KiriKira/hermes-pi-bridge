@@ -33,7 +33,7 @@ for arg in "$@"; do
       cat <<'EOF'
 Usage: bash install.sh [--install-pi] [--force]
 
-  --install-pi  Install @mariozechner/pi-coding-agent with npm when `pi` is missing.
+  --install-pi  Install @earendil-works/pi-coding-agent with npm when `pi` is missing.
   --force       Replace existing non-symlink plugin/skill files with repository symlinks.
 
 The installer never overwrites ~/.pi/agent authentication/configuration files
@@ -61,14 +61,14 @@ if command -v pi &>/dev/null; then
   ok "pi found: $PI_VER"
 elif $INSTALL_PI; then
   command -v npm &>/dev/null || fail "npm is required for --install-pi"
-  info "pi not found; installing @mariozechner/pi-coding-agent"
-  npm install -g @mariozechner/pi-coding-agent
+  info "pi not found; installing @earendil-works/pi-coding-agent"
+  npm install -g --ignore-scripts @earendil-works/pi-coding-agent
   command -v pi &>/dev/null || fail "npm completed but pi is still not reachable in PATH"
   PI_VER=$(pi --version 2>/dev/null || echo "unknown")
   ok "pi installed: $PI_VER"
 else
   warn "pi not found in PATH"
-  info "Re-run with --install-pi, or install manually: npm install -g @mariozechner/pi-coding-agent"
+  info "Re-run with --install-pi, or install manually: npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 fi
 
 link_skill() {
