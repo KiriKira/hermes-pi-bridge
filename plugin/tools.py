@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -20,6 +21,27 @@ _ctx_ref = None
 def set_context_ref(ctx) -> None:
     global _ctx_ref
     _ctx_ref = ctx
+
+
+def _pi_subprocess_env() -> dict[str, str]:
+    """Build a child environment using Hermes' own secret-filtering policy.
+
+    Current Hermes exposes the same helper used by its first-party Codex
+    app-server runtime: provider credentials may flow to model-driving CLIs,
+    while Hermes-internal/gateway secrets are stripped. The fallback preserves
+    compatibility with older Hermes releases but is intentionally loud because
+    those releases do not expose the centralized filter.
+    """
+    try:
+        from tools.environments.local import hermes_subprocess_env
+
+        return hermes_subprocess_env(inherit_credentials=True)
+    except (ImportError, AttributeError):
+        logger.warning(
+            "pi-bridge: Hermes subprocess environment filter unavailable; "
+            "falling back to the host environment. Update Hermes for filtered child environments."
+        )
+        return os.environ.copy()
 
 
 def _find_pi() -> Optional[str]:
@@ -130,7 +152,11 @@ def pi_check(args: dict, **kwargs) -> str:
     if pi_bin:
         try:
             result = subprocess.run(
-                [pi_bin, "--version"], capture_output=True, text=True, timeout=10
+                [pi_bin, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=_pi_subprocess_env(),
             )
             info["version"] = result.stdout.strip() or result.stderr.strip()
         except Exception as exc:
@@ -177,6 +203,7 @@ def pi_task(args: dict, **kwargs) -> str:
             text=True,
             timeout=timeout,
             cwd=working_dir,
+            env=_pi_subprocess_env(),
         )
     except subprocess.TimeoutExpired:
         return json.dumps({"status": "timeout", "error": f"pi timed out after {timeout}s"})
