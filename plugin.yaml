@@ -1,0 +1,61 @@
+manifest_version: 2
+api_version: 1
+name: pi-bridge
+version: 1.2.0
+description: "Hermes plugin for delegating execution to pi and orchestrating goal-specific pi_flow workflows"
+author: hermes-pi-bridge
+license: MIT
+homepage: https://github.com/KiriKira/hermes-pi-bridge
+tags:
+  - pi
+  - delegation
+  - orchestration
+  - coding-agent
+provides_tools:
+  - pi_check
+  - pi_task
+  - pi_session_start
+  - pi_session_send
+  - pi_session_read
+  - pi_session_stop
+  - pi_session_list
+provides_hooks:
+  - pre_llm_call
+  - on_session_finalize
+config_schema:
+  fast_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for fast/mechanical work; blank uses pi default."
+  fast_model:
+    type: str
+    default: ""
+    description: "Optional pi model for fast/mechanical work; blank uses pi default."
+  fast_thinking:
+    type: str
+    default: "minimal"
+    description: "Pi thinking level for fast work."
+  standard_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for normal implementation/debugging; blank uses pi default."
+  standard_model:
+    type: str
+    default: ""
+    description: "Optional pi model for normal implementation/debugging; blank uses pi default."
+  standard_thinking:
+    type: str
+    default: "medium"
+    description: "Pi thinking level for standard work."
+  deep_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for difficult reasoning; blank uses pi default."
+  deep_model:
+    type: str
+    default: ""
+    description: "Optional pi model for difficult reasoning; blank uses pi default."
+  deep_thinking:
+    type: str
+    default: "high"
+    description: "Pi thinking level for deep work."

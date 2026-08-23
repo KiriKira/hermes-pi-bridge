@@ -1,14 +1,15 @@
-"""Hermes -> pi bridge plugin.
+"""Hermes -> pi bridge implementation.
 
 The plugin exposes a small set of pi execution primitives and one explicit
 high-level convention: when the user asks to use ``pi_flow``, Hermes loads the
-``pi-flow`` skill and creates a goal-specific workflow at runtime.
+bundled namespaced skill and creates a goal-specific workflow at runtime.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ def _is_pi_flow_request(message: str) -> bool:
 _PI_FLOW_REMINDER = """\
 [pi-bridge] PI_FLOW REQUEST DETECTED.
 The user explicitly asked to use pi_flow.
-Before executing the goal, call skill_view("pi-flow") and follow that skill.
-Create a goal-specific flow at runtime; do not substitute a fixed domain flow.
+Before executing the goal, call skill_view("pi-bridge:pi-flow") and follow that skill.
+Create a goal-specific flow at runtime; do not substitute a fixed domain flow or switch profiles merely because pi_flow was requested.
 Hermes owns planning, routing, review, and verification. pi executes delegated work."""
 
 
@@ -109,9 +110,18 @@ def register(ctx) -> None:
         emoji="📋",
     )
 
+    skill_path = Path(__file__).resolve().parents[1] / "skills" / "pi-flow" / "SKILL.md"
+    ctx.register_skill(
+        "pi-flow",
+        skill_path,
+        "Create a goal-specific Hermes-supervised workflow executed through pi.",
+    )
+
     ctx.register_hook("pre_llm_call", _pre_llm_call_hook)
-    ctx.register_hook("on_session_end", _on_session_end_hook)
-    logger.info("pi-bridge: plugin loaded — 7 tools registered")
+    # Persistent pi sessions intentionally survive ordinary Hermes turns.
+    # Clean them only when Hermes finalizes the conversation on reset/shutdown.
+    ctx.register_hook("on_session_finalize", _on_session_finalize_hook)
+    logger.info("pi-bridge: plugin loaded — 7 tools and 1 namespaced skill registered")
 
 
 def _pre_llm_call_hook(**kwargs) -> str | None:
@@ -133,12 +143,12 @@ def _pre_llm_call_hook(**kwargs) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def _on_session_end_hook(**kwargs) -> None:
+def _on_session_finalize_hook(**kwargs) -> None:
     from .rpc_session import list_sessions, stop_session
 
     active = [s for s in list_sessions() if s.status in ("starting", "ready", "busy")]
     for session in active:
-        logger.warning("pi-bridge: stopping RPC session %s on shutdown", session.session_id)
+        logger.warning("pi-bridge: stopping RPC session %s on Hermes finalization", session.session_id)
         try:
             stop_session(session.session_id)
         except Exception as exc:

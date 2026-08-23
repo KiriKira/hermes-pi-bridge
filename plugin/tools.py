@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -14,12 +15,128 @@ logger = logging.getLogger(__name__)
 
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
 DEFAULT_SYNC_TIMEOUT = 900
+_EFFORTS = ("fast", "standard", "deep")
+_DEFAULT_THINKING = {"fast": "minimal", "standard": "medium", "deep": "high"}
+_VALID_THINKING = {"off", "minimal", "low", "medium", "high", "xhigh"}
 _ctx_ref = None
 
 
 def set_context_ref(ctx) -> None:
     global _ctx_ref
     _ctx_ref = ctx
+
+
+def _pi_subprocess_env() -> dict[str, str]:
+    """Build a child environment using Hermes' own secret-filtering policy."""
+    try:
+        from tools.environments.local import hermes_subprocess_env
+
+        return hermes_subprocess_env(inherit_credentials=True)
+    except (ImportError, AttributeError):
+        logger.warning(
+            "pi-bridge: Hermes subprocess environment filter unavailable; "
+            "falling back to the host environment. Update Hermes for filtered child environments."
+        )
+        return os.environ.copy()
+
+
+def _plugin_config(key: str, default=None):
+    if _ctx_ref is None or not hasattr(_ctx_ref, "get_config"):
+        return default
+    try:
+        return _ctx_ref.get_config(key, default)
+    except Exception as exc:
+        logger.warning("pi-bridge: failed to read plugin setting %s: %s", key, exc)
+        return default
+
+
+def _routing_for_effort(effort: str) -> dict[str, str]:
+    if effort not in _EFFORTS:
+        return {}
+
+    provider = str(_plugin_config(f"{effort}_provider", "") or "").strip()
+    model = str(_plugin_config(f"{effort}_model", "") or "").strip()
+    thinking = str(
+        _plugin_config(f"{effort}_thinking", _DEFAULT_THINKING[effort])
+        or _DEFAULT_THINKING[effort]
+    ).strip().lower()
+    if thinking not in _VALID_THINKING:
+        logger.warning(
+            "pi-bridge: invalid %s_thinking=%r; using %s",
+            effort,
+            thinking,
+            _DEFAULT_THINKING[effort],
+        )
+        thinking = _DEFAULT_THINKING[effort]
+
+    result = {"thinking": thinking}
+    if provider:
+        result["provider"] = provider
+    if model:
+        result["model"] = model
+    return result
+
+
+def _apply_effort_defaults(args_dict: dict) -> dict:
+    """Resolve a semantic effort tier through profile-scoped plugin settings."""
+    effective = dict(args_dict)
+    effort = str(effective.get("effort") or "").strip().lower()
+    if not effort:
+        return effective
+    if effort not in _EFFORTS:
+        logger.warning("pi-bridge: ignoring unknown effort tier %r", effort)
+        return effective
+
+    configured = _routing_for_effort(effort)
+    for key in ("provider", "model", "thinking"):
+        if not effective.get(key) and configured.get(key):
+            effective[key] = configured[key]
+    return effective
+
+
+def _gateway_delivery_state() -> dict:
+    """Return Hermes' current async-delivery/gateway-injection state.
+
+    The values come from Hermes' session ContextVars, so concurrent gateway
+    sessions do not leak routing identities into each other.
+    """
+    state = {
+        "async_delivery_supported": True,
+        "messaging_surface": False,
+        "session_key": "",
+        "gateway_injection_allowed": True,
+    }
+    try:
+        from gateway.session_context import (
+            async_delivery_supported,
+            get_session_env,
+            session_is_messaging_surface,
+        )
+
+        state["async_delivery_supported"] = bool(async_delivery_supported())
+        state["messaging_surface"] = bool(session_is_messaging_surface())
+        state["session_key"] = str(get_session_env("HERMES_SESSION_KEY", "") or "")
+    except (ImportError, AttributeError):
+        return state
+
+    if not state["messaging_surface"]:
+        return state
+
+    # PluginContext.inject_message intentionally requires a separate explicit
+    # gateway-injection grant. Read only that documented plugin-entry flag so
+    # pi_session_send can fail before promising a completion it cannot deliver.
+    state["gateway_injection_allowed"] = False
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        entries = ((config.get("plugins") or {}).get("entries") or {})
+        plugin_id = getattr(_ctx_ref, "plugin_id", "pi-bridge") if _ctx_ref else "pi-bridge"
+        entry = entries.get(plugin_id) or {}
+        state["gateway_injection_allowed"] = entry.get("allow_gateway_injection") is True
+    except Exception:
+        pass
+    return state
 
 
 def _find_pi() -> Optional[str]:
@@ -123,14 +240,18 @@ def _format_output(parsed: dict) -> str:
 
 
 def pi_check(args: dict, **kwargs) -> str:
-    """Report whether pi is installed without exposing credential contents."""
+    """Report pi availability and this profile's semantic routing policy."""
     pi_bin = _find_pi()
     info: dict = {"installed": bool(pi_bin), "binary": pi_bin}
 
     if pi_bin:
         try:
             result = subprocess.run(
-                [pi_bin, "--version"], capture_output=True, text=True, timeout=10
+                [pi_bin, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=_pi_subprocess_env(),
             )
             info["version"] = result.stdout.strip() or result.stderr.strip()
         except Exception as exc:
@@ -142,6 +263,15 @@ def pi_check(args: dict, **kwargs) -> str:
         info["auth_config_present"] = auth_file.exists()
     else:
         info["install_command"] = f"npm install -g --ignore-scripts {PI_PACKAGE}"
+
+    info["effort_routing"] = {
+        effort: _routing_for_effort(effort) for effort in _EFFORTS
+    }
+    delivery = _gateway_delivery_state()
+    info["async_delivery_supported"] = delivery["async_delivery_supported"]
+    info["gateway_injection_allowed"] = (
+        delivery["gateway_injection_allowed"] if delivery["messaging_surface"] else None
+    )
 
     from .rpc_session import active_session_count
 
@@ -166,8 +296,9 @@ def pi_task(args: dict, **kwargs) -> str:
             "fix": f"npm install -g --ignore-scripts {PI_PACKAGE}",
         })
 
-    timeout = int(args.get("timeout") or DEFAULT_SYNC_TIMEOUT)
-    cmd = _pi_cmd(pi_bin, args, extra_flags=["--mode", "json"])
+    effective = _apply_effort_defaults(args)
+    timeout = int(effective.get("timeout") or DEFAULT_SYNC_TIMEOUT)
+    cmd = _pi_cmd(pi_bin, effective, extra_flags=["--mode", "json"])
     started = time.time()
 
     try:
@@ -177,6 +308,7 @@ def pi_task(args: dict, **kwargs) -> str:
             text=True,
             timeout=timeout,
             cwd=working_dir,
+            env=_pi_subprocess_env(),
         )
     except subprocess.TimeoutExpired:
         return json.dumps({"status": "timeout", "error": f"pi timed out after {timeout}s"})
@@ -194,6 +326,7 @@ def pi_task(args: dict, **kwargs) -> str:
             "stderr": (process.stderr or "")[-1000:],
             "returncode": process.returncode,
             "duration_ms": duration_ms,
+            "effort": effective.get("effort"),
             "model": parsed.get("model"),
             "provider": parsed.get("provider"),
         }, ensure_ascii=False)
@@ -203,6 +336,7 @@ def pi_task(args: dict, **kwargs) -> str:
         "result": result_text,
         "num_turns": parsed["num_turns"],
         "duration_ms": duration_ms,
+        "effort": effective.get("effort"),
         "model": parsed.get("model"),
         "provider": parsed.get("provider"),
     }, ensure_ascii=False)
@@ -220,16 +354,17 @@ def pi_session_start(args: dict, **kwargs) -> str:
     if active_session_count() >= 3:
         return json.dumps({"error": "Maximum 3 concurrent RPC sessions. Stop one first."})
 
+    effective = _apply_effort_defaults(args)
     session = start_session(
         working_dir=working_dir,
-        model=args.get("model"),
-        provider=args.get("provider"),
-        thinking=args.get("thinking"),
-        tools=args.get("tools"),
-        system_prompt=args.get("system_prompt"),
-        append_system_prompt=args.get("append_system_prompt"),
-        persist_session=bool(args.get("persist_session", True)),
-        ready_timeout=float(args.get("ready_timeout", 15)),
+        model=effective.get("model"),
+        provider=effective.get("provider"),
+        thinking=effective.get("thinking"),
+        tools=effective.get("tools"),
+        system_prompt=effective.get("system_prompt"),
+        append_system_prompt=effective.get("append_system_prompt"),
+        persist_session=bool(effective.get("persist_session", True)),
+        ready_timeout=float(effective.get("ready_timeout", 15)),
     )
 
     if session.status == "error":
@@ -244,6 +379,7 @@ def pi_session_start(args: dict, **kwargs) -> str:
         "session_id": session.session_id,
         "working_dir": working_dir,
         "pi_session_file": session.pi_session_file,
+        "effort": effective.get("effort"),
     }, ensure_ascii=False)
 
 
@@ -255,12 +391,28 @@ def pi_session_send(args: dict, **kwargs) -> str:
     if not message:
         return json.dumps({"error": "message is required"})
 
+    delivery = _gateway_delivery_state()
+    if not delivery["async_delivery_supported"]:
+        return json.dumps({
+            "error": "This Hermes runtime cannot deliver an asynchronous pi completion after the current turn.",
+            "fix": "Use pi_task for this phase, or run the flow in an interactive CLI/gateway session.",
+        })
+    if delivery["messaging_surface"] and not delivery["gateway_injection_allowed"]:
+        return json.dumps({
+            "error": "Gateway completion injection is not authorized for pi-bridge.",
+            "fix": (
+                "Grant plugins.entries.pi-bridge.allow_gateway_injection=true in this Hermes profile, "
+                "or use pi_task instead of a persistent asynchronous session."
+            ),
+        })
+
     from .rpc_session import send_message
 
     return json.dumps(send_message(
         session_id=session_id,
         message=message,
         streaming_behavior=args.get("streaming_behavior", "followUp"),
+        completion_session_key=delivery["session_key"] or None,
     ), ensure_ascii=False)
 
 
