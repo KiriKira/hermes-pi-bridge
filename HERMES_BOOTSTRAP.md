@@ -34,16 +34,16 @@ Requirements:
 
 ### 2. Install pi when missing
 
-If `pi --version` succeeds, keep the existing installation.
+If `pi --version` succeeds, keep the existing installation even if it came from the legacy package namespace.
 
-Otherwise run:
+Otherwise install the current package:
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi --version
 ```
 
-Do not overwrite pi authentication files.
+Do not overwrite pi authentication files. The older `@mariozechner/pi-coding-agent` package was renamed/deprecated; an existing working `pi` binary can still be used, but new installs should use `@earendil-works/pi-coding-agent`.
 
 ### 3. Configure pi authentication/model access
 
@@ -56,7 +56,7 @@ ls -la ~/.pi/agent 2>/dev/null || true
 pi --version
 ```
 
-If pi is not authenticated/configured, ask the user which provider/model they want to use, then use pi's supported provider setup. Never echo API keys into chat, logs, commits, or repository files.
+If pi is not authenticated/configured, ask the user which provider/model they want to use, then use pi's supported provider setup. Prefer Pi's interactive `/login` flow for supported subscription/provider authentication. Never echo API keys into chat, logs, commits, or repository files.
 
 The bridge is model-agnostic: every task/session can pass `provider`, `model`, and `thinking` explicitly.
 
@@ -66,6 +66,12 @@ From this repository:
 
 ```bash
 bash install.sh
+```
+
+Or, if pi is missing and npm is available:
+
+```bash
+bash install.sh --install-pi
 ```
 
 This installs/symlinks:
