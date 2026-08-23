@@ -1,18 +1,30 @@
 """Function-calling schemas for the Hermes -> pi bridge tools."""
 
+_TIER_PROPERTY = {
+    "tier": {
+        "type": "string",
+        "enum": ["fast", "standard", "deep"],
+        "description": (
+            "Optional semantic routing tier. The bridge resolves it from the "
+            "pi-bridge plugin settings. Explicit model/provider/thinking values override it."
+        ),
+    },
+}
+
 _COMMON_MODEL_PROPERTIES = {
+    **_TIER_PROPERTY,
     "model": {
         "type": "string",
-        "description": "Optional pi model ID/pattern override. Omit to use pi's configured default.",
+        "description": "Optional pi model ID/pattern override. Omit to use the tier setting or pi default.",
     },
     "provider": {
         "type": "string",
-        "description": "Optional pi provider override. Omit to use pi's configured default.",
+        "description": "Optional pi provider override. Omit to use the tier setting or pi default.",
     },
     "thinking": {
         "type": "string",
-        "enum": ["off", "minimal", "low", "medium", "high", "xhigh"],
-        "description": "Optional reasoning depth override.",
+        "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        "description": "Optional pi reasoning-depth override.",
     },
     "tools": {
         "type": "string",
@@ -30,7 +42,10 @@ _COMMON_MODEL_PROPERTIES = {
 
 PI_CHECK_SCHEMA = {
     "name": "pi_check",
-    "description": "Check whether pi is installed and report basic local configuration state.",
+    "description": (
+        "Check whether pi is installed and report basic local configuration plus "
+        "the configured fast/standard/deep routing tiers. No credential contents are returned."
+    ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
@@ -65,8 +80,8 @@ PI_TASK_SCHEMA = {
 PI_SESSION_START_SCHEMA = {
     "name": "pi_session_start",
     "description": (
-        "Start a persistent pi RPC session. Use it when several dependent steps, "
-        "iteration, or steering are expected."
+        "Start a persistent pi RPC session. Use it when several dependent steps or "
+        "iterative work are expected."
     ),
     "parameters": {
         "type": "object",
@@ -94,19 +109,21 @@ PI_SESSION_START_SCHEMA = {
 PI_SESSION_SEND_SCHEMA = {
     "name": "pi_session_send",
     "description": (
-        "Send one instruction to an active pi RPC session. Returns immediately; "
-        "Hermes is notified when the response completes. Do not stack prompts."
+        "Send one instruction to a ready pi RPC session and wait until pi emits its "
+        "documented agent_settled completion event. A prompt acknowledgement alone is not completion."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "session_id": {"type": "string"},
             "message": {"type": "string"},
-            "streaming_behavior": {
-                "type": "string",
-                "enum": ["followUp", "steer"],
-                "description": "Use followUp normally; use steer only to redirect an active line of work.",
-                "default": "followUp",
+            "wait_timeout": {
+                "type": "number",
+                "description": (
+                    "Maximum seconds to wait for agent_settled. Default: 900. "
+                    "A timeout does not kill the pi process; inspect with pi_session_read/list."
+                ),
+                "default": 900,
             },
         },
         "required": ["session_id", "message"],
@@ -115,7 +132,7 @@ PI_SESSION_SEND_SCHEMA = {
 
 PI_SESSION_READ_SCHEMA = {
     "name": "pi_session_read",
-    "description": "Read buffered text from an existing pi RPC session.",
+    "description": "Read buffered text and status from an existing pi RPC session.",
     "parameters": {
         "type": "object",
         "properties": {
