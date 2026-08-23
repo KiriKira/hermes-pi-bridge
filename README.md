@@ -16,7 +16,7 @@ Hermes already has several official RPC/integration surfaces, but they solve dif
 
 None of those currently provide a generic built-in client that launches and supervises an arbitrary external agent such as pi. This plugin fills that narrower gap by speaking pi's own `--mode rpc` protocol from a normal Hermes plugin.
 
-It does not replace Hermes' RPC server or provider transport APIs.
+It does not replace Hermes' RPC server, native subagents, or provider transport APIs.
 
 ## pi_flow
 
@@ -42,14 +42,16 @@ The skill is not a fixed domain workflow. Hermes creates the minimum goal-specif
 
 A Hermes **profile** is an independent agent home: its own config, API keys, SOUL, memories, sessions, skills, plugins, gateway state, and model defaults.
 
-A `pi_flow` is only an execution/orchestration mode for one goal.
+A `pi_flow` is an execution/orchestration method for one goal.
 
 Therefore:
 
 - do **not** create or switch profiles merely because a request should use pi;
 - use `pi_flow` inside the current profile for ordinary per-goal delegation;
-- create a dedicated profile only when you want a persistent specialist with separate state, for example a long-lived reverse-engineering/research agent with its own memory, model defaults, terminal cwd, and plugin set;
+- create a dedicated profile only when you want a persistent specialist with separate state, for example a long-lived reverse-engineering/research agent with its own memory, model defaults, terminal cwd, plugin settings, and plugin set;
 - when using a dedicated profile, install/enable `pi-bridge` in that profile and continue using `pi_flow` inside it.
+
+Profiles do not sandbox filesystem access. Use `terminal.cwd` and an appropriate sandbox/backend separately when isolation matters.
 
 ## Official Hermes installation path
 
@@ -95,7 +97,7 @@ The plugin exposes seven tools:
 
 | Tool | Purpose |
 |---|---|
-| `pi_check` | Check local pi availability/config state |
+| `pi_check` | Check local pi availability, effort routing, and async-delivery state |
 | `pi_task` | Run one focused synchronous task |
 | `pi_session_start` | Start a persistent pi RPC session |
 | `pi_session_send` | Send one instruction to a session |
@@ -108,19 +110,56 @@ There are intentionally only two execution modes:
 - **one-shot** — `pi_task` for a focused phase that fits in one prompt;
 - **persistent RPC** — a pi session for iterative, dependent, or steerable work.
 
-The plugin does not add a second background-task subsystem because persistent RPC already provides state and steering.
+Persistent Pi sessions survive normal Hermes turns and are cleaned up when the flow explicitly stops them or Hermes finalizes/resets the conversation.
 
-## Model effort routing
+## Profile-scoped model effort routing
 
-The bridge does not hardcode model/provider IDs.
-
-The bundled skill uses three semantic effort levels:
+The bridge does not hardcode model/provider IDs. Calls accept one semantic `effort` value:
 
 - `fast` — mechanical, high-volume, easily verified work;
 - `standard` — normal implementation/debugging;
 - `deep` — ambiguous reasoning, competing hypotheses, cross-system correlation, or expensive-to-redo decisions.
 
-If the user/profile has explicit pi model mappings, Hermes may pass them to `pi_task` or `pi_session_start`. Otherwise it should omit `provider`/`model` and let pi use its configured default. Hermes should never invent model IDs merely to satisfy a tier label.
+The mapping lives in the official Hermes plugin settings for the active profile. Example:
+
+```bash
+hermes config set plugins.entries.pi-bridge.settings.fast_model "your-cheap-model-id"
+hermes config set plugins.entries.pi-bridge.settings.fast_provider "your-provider"
+hermes config set plugins.entries.pi-bridge.settings.standard_model "your-standard-model-id"
+hermes config set plugins.entries.pi-bridge.settings.deep_model "your-strong-model-id"
+hermes config set plugins.entries.pi-bridge.settings.deep_provider "your-provider"
+```
+
+For a named profile, prefix the same commands with `hermes -p <profile>` or use the profile alias.
+
+Thinking defaults are `minimal` / `medium` / `high` for fast / standard / deep and may also be changed with `fast_thinking`, `standard_thinking`, and `deep_thinking` plugin settings.
+
+Then Hermes normally passes only the semantic tier:
+
+```text
+pi_task(..., effort="fast")
+pi_session_start(..., effort="deep")
+```
+
+Explicit `provider`, `model`, or `thinking` on a call always wins over the profile mapping. Blank mappings fall back to pi's own configured default. `pi_check` reports the current profile's effective mapping.
+
+## Async completion and gateway security
+
+Hermes distinguishes sessions that can deliver background completions from finite/stateless runtimes. `pi_session_send` follows that contract:
+
+- interactive CLI and supported long-lived sessions may use persistent async Pi RPC;
+- stateless API/one-shot contexts are refused and should use `pi_task` instead;
+- messaging gateways require Hermes' explicit plugin grant before a background Pi completion may inject a new turn back into the originating chat.
+
+For a profile that should allow persistent Pi flows from Telegram/Discord/etc.:
+
+```bash
+hermes config set plugins.entries.pi-bridge.allow_gateway_injection true
+```
+
+This is deliberately separate from plugin enablement. Without the grant, `pi_session_send` fails before promising a completion it cannot route.
+
+Pi child processes use Hermes' filtered subprocess environment when available, following the same secret-boundary pattern as Hermes' first-party Codex app-server runtime: model/provider credentials may be inherited while Hermes-internal/gateway secrets are stripped.
 
 ## Repository layout
 
@@ -130,7 +169,7 @@ __init__.py                 native plugin entrypoint
 plugin/
   __init__.py               registration + explicit pi_flow trigger
   schemas.py                tool schemas
-  tools.py                  one-shot execution + wrappers
+  tools.py                  one-shot execution + profile routing/delivery checks
   rpc_session.py            persistent pi RPC lifecycle
 skills/
   pi-flow/
@@ -144,8 +183,8 @@ tests/
 ## Design constraints
 
 - Follow Hermes' native plugin lifecycle instead of patching core config.
-- No model/vendor assumptions in orchestration logic.
+- Keep model/vendor choices in profile-scoped plugin settings, not repository logic.
 - No domain-specific workflows baked into the plugin.
 - No automatic takeover of every coding-looking request; `pi_flow` is explicit.
-- No secrets in repository files.
+- No secrets in repository files or unfiltered child environments on current Hermes.
 - No acceptance of worker claims without verification when verification is practical.
