@@ -118,7 +118,9 @@ def register(ctx) -> None:
     )
 
     ctx.register_hook("pre_llm_call", _pre_llm_call_hook)
-    ctx.register_hook("on_session_end", _on_session_end_hook)
+    # Persistent pi sessions intentionally survive ordinary Hermes turns.
+    # Clean them only when Hermes finalizes the conversation on reset/shutdown.
+    ctx.register_hook("on_session_finalize", _on_session_finalize_hook)
     logger.info("pi-bridge: plugin loaded — 7 tools and 1 namespaced skill registered")
 
 
@@ -141,12 +143,12 @@ def _pre_llm_call_hook(**kwargs) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def _on_session_end_hook(**kwargs) -> None:
+def _on_session_finalize_hook(**kwargs) -> None:
     from .rpc_session import list_sessions, stop_session
 
     active = [s for s in list_sessions() if s.status in ("starting", "ready", "busy")]
     for session in active:
-        logger.warning("pi-bridge: stopping RPC session %s on shutdown", session.session_id)
+        logger.warning("pi-bridge: stopping RPC session %s on Hermes finalization", session.session_id)
         try:
             stop_session(session.session_id)
         except Exception as exc:
