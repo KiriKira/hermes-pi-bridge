@@ -1,28 +1,93 @@
 # hermes-pi-bridge
 
-A small bridge that lets Hermes supervise work executed by the [pi agent harness](https://github.com/earendil-works/pi).
+A standalone Hermes plugin that lets Hermes supervise work executed by the [pi agent harness](https://github.com/earendil-works/pi).
 
 **Hermes plans and judges. pi executes.**
 
-The bridge deliberately avoids tying itself to a particular model, provider, project type, or domain workflow.
+The bridge is intentionally model-agnostic and domain-agnostic.
+
+## Why this plugin still exists
+
+Hermes already has several official RPC/integration surfaces, but they solve different directions of integration:
+
+- **ACP / TUI gateway JSON-RPC / HTTP API** let external programs drive Hermes.
+- Hermes documents a **Pi-style RPC mapping** for its own TUI gateway, so Pi-like clients can map concepts such as prompt, steer, abort, state, history, and session branching onto Hermes.
+- Hermes also has a first-party **Codex app-server runtime** where Hermes delegates an entire turn/tool loop to Codex over stdio JSON-RPC.
+
+None of those currently provide a generic built-in client that launches and supervises an arbitrary external agent such as pi. This plugin fills that narrower gap by speaking pi's own `--mode rpc` protocol from a normal Hermes plugin.
+
+It does not replace Hermes' RPC server or provider transport APIs.
 
 ## pi_flow
 
-`pi_flow` is the stable high-level convention provided by this repository.
+`pi_flow` is the stable high-level convention exposed by this plugin.
 
-When the user says something such as:
+Example:
 
 ```text
-通过 pi_flow 去修复这个项目的测试
-通过 pi_flow 去分析这些日志并找出根因
-通过 pi_flow 去实现这个功能并验证它
+通过 pi_flow 去逆向这个 IoT 的本地协议
+通过 pi_flow 去修复这个项目并验证测试
+通过 pi_flow 去研究这些日志并找出根因
 ```
 
-The plugin detects the explicit `pi_flow` token and tells Hermes to load the `pi-flow` skill.
+The plugin recognizes the explicit `pi_flow` token and nudges Hermes to load the bundled namespaced skill:
 
-That skill does **not** contain a fixed workflow. Hermes creates a flow for the current goal by defining completion criteria, ordered phases, execution mode, model tier, expected artifacts, and verification. Hermes can adapt or discard phases as evidence changes.
+```text
+pi-bridge:pi-flow
+```
 
-Reusable flows may be saved under `~/.hermes/pi-flows/`, but new domains do not require new Hermes skills.
+The skill is not a fixed domain workflow. Hermes creates the minimum goal-specific flow at runtime, chooses one-shot versus persistent RPC execution, assigns model effort, reviews evidence, and adapts the flow as new information appears.
+
+## Profiles vs pi_flow
+
+A Hermes **profile** is an independent agent home: its own config, API keys, SOUL, memories, sessions, skills, plugins, gateway state, and model defaults.
+
+A `pi_flow` is only an execution/orchestration mode for one goal.
+
+Therefore:
+
+- do **not** create or switch profiles merely because a request should use pi;
+- use `pi_flow` inside the current profile for ordinary per-goal delegation;
+- create a dedicated profile only when you want a persistent specialist with separate state, for example a long-lived reverse-engineering/research agent with its own memory, model defaults, terminal cwd, and plugin set;
+- when using a dedicated profile, install/enable `pi-bridge` in that profile and continue using `pi_flow` inside it.
+
+## Official Hermes installation path
+
+This repository is structured as a native standalone Hermes plugin and should be installed through Hermes' plugin manager:
+
+```bash
+hermes plugins install KiriKira/hermes-pi-bridge --enable
+hermes plugins doctor pi-bridge --ci
+```
+
+Plugins are profile-scoped. To install into a named profile:
+
+```bash
+hermes -p <profile> plugins install KiriKira/hermes-pi-bridge --enable
+hermes -p <profile> plugins doctor pi-bridge --ci
+```
+
+Hermes' plugin manager handles cloning, security scanning, enablement, update metadata, profile scoping, and the plugin lifecycle. This repository deliberately does not patch `config.yaml` or symlink itself into `~/.hermes/plugins`.
+
+After installation, restart the Hermes session so the plugin is loaded.
+
+## pi dependency
+
+`pi` is a separate external CLI and is not installed by Hermes' Python plugin manager.
+
+Check first:
+
+```bash
+pi --version
+```
+
+If it is missing:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+```
+
+Configure/authenticate pi through pi's own supported mechanisms. Do not store provider credentials in this repository.
 
 ## Execution primitives
 
@@ -40,108 +105,47 @@ The plugin exposes seven tools:
 
 There are intentionally only two execution modes:
 
-- **one-shot:** use `pi_task` for a focused phase that fits in one prompt;
-- **persistent:** use an RPC session for iterative or multi-phase work.
+- **one-shot** — `pi_task` for a focused phase that fits in one prompt;
+- **persistent RPC** — a pi session for iterative, dependent, or steerable work.
 
-Long work does not need a second background-task subsystem; a persistent RPC session already provides state, steering, and completion notifications.
+The plugin does not add a second background-task subsystem because persistent RPC already provides state and steering.
 
-## Model routing
+## Model effort routing
 
-The installer creates `~/.hermes/pi-flow.yaml` if it does not exist.
+The bridge does not hardcode model/provider IDs.
 
-It provides optional semantic slots:
+The bundled skill uses three semantic effort levels:
 
-- `fast` — cheap/high-throughput work that is easy to verify;
+- `fast` — mechanical, high-volume, easily verified work;
 - `standard` — normal implementation/debugging;
-- `deep` — difficult ambiguous reasoning.
+- `deep` — ambiguous reasoning, competing hypotheses, cross-system correlation, or expensive-to-redo decisions.
 
-Provider and model values are blank by default. Hermes must not invent model IDs. Blank values mean pi should use its configured default.
-
-The `pi-flow` skill uses a cheapest-suitable-then-escalate policy: execution mistakes such as a bad path or missing dependency stay on the current tier; stronger models are reserved for low-confidence material conclusions, contradictory evidence, unresolved hypotheses, or repeated reasoning failure.
-
-## Requirements
-
-- Hermes Agent
-- Python 3.9+
-- pi coding agent
-- Node.js/npm only if pi still needs to be installed
-
-Current pi package:
-
-```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
-
-Pi authentication and provider configuration remain owned by pi under `~/.pi/agent/` and its supported login/provider mechanisms. This repository does not store provider secrets.
-
-## Bootstrap
-
-For a Hermes-readable first-time setup procedure, start with:
-
-```text
-HERMES_BOOTSTRAP.md
-```
-
-Manual installation:
-
-```bash
-git clone https://github.com/KiriKira/hermes-pi-bridge.git
-cd hermes-pi-bridge
-bash install.sh --install-pi
-```
-
-If pi is already installed:
-
-```bash
-bash install.sh
-```
-
-The installer:
-
-1. links `plugin/` to `~/.hermes/plugins/pi-bridge`;
-2. links `skill/SKILL_FLOW.md` as the `pi-flow` Hermes skill;
-3. creates `~/.hermes/pi-flow.yaml` from the generic template only when absent;
-4. creates `~/.hermes/pi-flows/` for optional reusable flows;
-5. adds `pi_bridge` next to the existing `hermes-cli` toolset entry when that can be done safely.
-
-Restart Hermes after installation, then run `pi_check()`.
-
-## How Hermes runs a flow
-
-At runtime Hermes should:
-
-1. translate the request into an objective, done criteria, constraints, inputs, working directory, and verification;
-2. create the minimum ordered phases needed for that goal;
-3. choose one-shot or persistent execution per phase;
-4. choose `fast`, `standard`, or `deep` routing without hardcoding model names;
-5. delegate bounded work to pi;
-6. review evidence and independently verify important results;
-7. adapt the remaining phases when new evidence changes the plan;
-8. stop all sessions and report the verified outcome or concrete blocker.
-
-See `skill/SKILL_FLOW.md` for the full contract.
+If the user/profile has explicit pi model mappings, Hermes may pass them to `pi_task` or `pi_session_start`. Otherwise it should omit `provider`/`model` and let pi use its configured default. Hermes should never invent model IDs merely to satisfy a tier label.
 
 ## Repository layout
 
 ```text
-HERMES_BOOTSTRAP.md       first-time instructions for Hermes
-install.sh                idempotent installer
-config/
-  pi-flow.example.yaml    generic optional model routing
+plugin.yaml                 native Hermes plugin manifest
+__init__.py                 native plugin entrypoint
 plugin/
-  __init__.py             registration + explicit pi_flow trigger
-  plugin.yaml             plugin manifest
-  schemas.py              tool schemas
-  tools.py                one-shot tools and RPC wrappers
-  rpc_session.py          persistent pi RPC lifecycle
-skill/
-  SKILL_FLOW.md           generic runtime flow creation/orchestration
+  __init__.py               registration + explicit pi_flow trigger
+  schemas.py                tool schemas
+  tools.py                  one-shot execution + wrappers
+  rpc_session.py            persistent pi RPC lifecycle
+skills/
+  pi-flow/
+    SKILL.md                 bundled namespaced orchestration skill
+after-install.md            instructions rendered by Hermes after install
+HERMES_BOOTSTRAP.md         first-time operator/agent bootstrap sequence
+tests/
+  test_bridge.py            retained bridge contract tests
 ```
 
 ## Design constraints
 
-- No model/vendor assumptions in workflow logic.
-- No domain-specific skills in this repository.
-- No automatic takeover of every coding-looking user request; `pi_flow` is explicit.
-- No API keys or captured credentials in repository/config files.
+- Follow Hermes' native plugin lifecycle instead of patching core config.
+- No model/vendor assumptions in orchestration logic.
+- No domain-specific workflows baked into the plugin.
+- No automatic takeover of every coding-looking request; `pi_flow` is explicit.
+- No secrets in repository files.
 - No acceptance of worker claims without verification when verification is practical.
