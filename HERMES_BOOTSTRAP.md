@@ -1,22 +1,24 @@
 # Hermes bootstrap entrypoint
 
-This file is intentionally written as an instruction page for a Hermes Agent that has access to this repository but may not yet have pi or the pi bridge installed.
+This is the file Hermes should read when setting up this repository on a machine that may not have pi or the bridge installed yet.
 
 ## Goal
 
-Prepare a repeatable Hermes -> pi setup, verify it, and make the reverse-engineering workflow available to Hermes.
+Prepare a working Hermes -> pi bridge and make `pi_flow` available as the stable high-level workflow convention.
 
-## Safety boundary
+After setup, a user should be able to say:
 
-Use the reverse-engineering workflow only on software, devices, accounts, and networks you own or are explicitly authorized to test. Prefer interoperability and local-control research. Do not use captured credentials or secrets belonging to other users.
+```text
+通过 pi_flow 去 <goal>
+```
+
+Hermes should then load the `pi-flow` skill, create a goal-specific flow, delegate execution to pi, review evidence, and adapt the flow until the goal is verified or blocked.
 
 ## Required order
 
-Hermes should execute these stages in order and stop on a failed stage rather than guessing.
-
 ### 1. Inspect prerequisites
 
-Check:
+Run:
 
 ```bash
 command -v node || true
@@ -29,119 +31,126 @@ command -v pi || true
 Requirements:
 
 - Hermes Agent is already installed.
-- Python 3.9+ is available.
-- Node.js/npm are required only if pi is not already installed.
+- Python 3.9+ is available for the bridge and installer helpers.
+- Node.js/npm are needed only when pi is not already installed.
 
-### 2. Install pi when missing
+### 2. Install pi only when missing
 
-If `pi --version` succeeds, keep the existing installation even if it came from the legacy package namespace.
+If `pi --version` works, keep the existing installation.
 
-Otherwise install the current package:
+Otherwise run:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi --version
 ```
 
-Do not overwrite pi authentication files. The older `@mariozechner/pi-coding-agent` package was renamed/deprecated; an existing working `pi` binary can still be used, but new installs should use `@earendil-works/pi-coding-agent`.
+Do not replace an existing working pi installation merely to normalize versions.
 
-### 3. Configure pi authentication/model access
+### 3. Configure pi model/provider access
 
-Pi owns its provider authentication and model configuration under `~/.pi/agent/`.
+Pi owns its provider authentication and model configuration under `~/.pi/agent/` and through its supported login/provider mechanisms.
 
-First inspect without printing secrets:
+Inspect configuration presence without printing secrets:
 
 ```bash
 ls -la ~/.pi/agent 2>/dev/null || true
 pi --version
 ```
 
-If pi is not authenticated/configured, ask the user which provider/model they want to use, then use pi's supported provider setup. Prefer Pi's interactive `/login` flow for supported subscription/provider authentication. Never echo API keys into chat, logs, commits, or repository files.
+If pi still needs authentication, use pi's supported authentication flow. Never print API keys, tokens, or auth-file contents into chat, logs, commits, or this repository.
 
-The bridge is model-agnostic: every task/session can pass `provider`, `model`, and `thinking` explicitly.
+The bridge is model-agnostic. It passes `provider`, `model`, and `thinking` only when Hermes intentionally supplies them.
 
-### 4. Install this bridge and its skills
+### 4. Install the bridge
 
-From this repository:
+From this repository run:
 
 ```bash
 bash install.sh
 ```
 
-Or, if pi is missing and npm is available:
+Or let the installer install pi too when it is missing:
 
 ```bash
 bash install.sh --install-pi
 ```
 
-This installs/symlinks:
+The installer provides:
 
-- the `pi-bridge` Hermes plugin;
-- `pi-task-delegation`;
-- `pi-interactive-session`;
-- `pi-bootstrap`;
-- `pi-reverse-engineering-flow`;
-- a model-tier config template at `~/.hermes/pi-bridge-models.yaml` if none exists.
+- `~/.hermes/plugins/pi-bridge` — the bridge plugin;
+- `~/.hermes/skills/software-development/pi-flow/SKILL.md` — the only operational skill;
+- `~/.hermes/pi-flow.yaml` — model-routing preferences, created only when absent;
+- `~/.hermes/pi-flows/` — optional library for reusable flows.
 
-### 5. Configure model tiers
+It also enables the `pi_bridge` toolset when it can identify the relevant Hermes config entry safely.
 
-Open:
+### 5. Configure optional model routing
+
+Read:
 
 ```text
-~/.hermes/pi-bridge-models.yaml
+~/.hermes/pi-flow.yaml
 ```
 
-The file defines three semantic tiers:
+It defines three semantic tiers:
 
-- `fast`: cheap/high-throughput work such as grep, JADX searches, strings triage, pcap field extraction, formatting, and documentation updates.
-- `code`: implementation work such as Frida hooks, parsers, mitmproxy addons, Python PoCs, tests, and Home Assistant integration code.
-- `deep`: expensive reasoning for protocol state machines, cryptographic/key-flow analysis, obfuscation, native/managed/network correlation, contradictory evidence, and repeated failed hypotheses.
+- `fast` — cheap/high-throughput work that is easy to verify;
+- `standard` — normal implementation and debugging;
+- `deep` — difficult ambiguous reasoning where stronger models may materially improve the result.
 
-Hermes should read this file before starting a reverse-engineering flow and pass the selected tier's provider/model/thinking values to `pi_task` or `pi_session_start`.
+Provider/model fields are intentionally blank by default. Blank fields mean: use pi's configured default. Do not invent model IDs.
 
-If a tier is left blank, fall back to pi's configured default rather than inventing a model name.
+Hermes should start with the cheapest tier that plausibly fits and escalate only when there is evidence that stronger reasoning is needed.
 
-### 6. Restart Hermes and verify the bridge
+### 6. Restart Hermes and verify
 
-Restart Hermes so the plugin and skills are loaded. Then call:
+Restart Hermes so the plugin and skill are loaded. Then call:
 
 ```text
 pi_check()
 ```
 
-Expected minimum state:
+Minimum expected state:
 
-- `installed: true`
-- a pi version is reported
-- no bridge import error
+- `installed: true`;
+- a pi version is reported;
+- the `pi_bridge` toolset loads without an import error.
 
-Then run a read-only smoke test in a disposable directory:
+Then run a harmless one-shot smoke test in a disposable directory:
 
 ```text
 pi_task(
-  prompt="List the files in this directory and report what you see. Do not modify anything.",
+  prompt="List the files in this directory. Do not modify anything.",
   working_dir="/tmp",
   tools="read,grep,find,ls"
 )
 ```
 
-### 7. Load the reverse-engineering workflow
+### 7. Verify the pi_flow contract
 
-For an authorized reverse-engineering/local-IoT task, Hermes must load:
+Ask Hermes something containing the explicit token `pi_flow`, for example:
 
 ```text
-skill_view("pi-reverse-engineering-flow")
+通过 pi_flow 去检查这个项目的测试为什么失败
 ```
 
-Then follow that skill's phase ordering, evidence contract, model escalation rules, and workspace layout.
+Hermes must load:
+
+```text
+skill_view("pi-flow")
+```
+
+The skill will instruct Hermes to create a flow for that specific goal rather than loading a fixed domain workflow.
 
 ## Completion criteria
 
-Bootstrap is complete only when all of the following are true:
+Bootstrap is complete when:
 
 1. `pi --version` works.
-2. Pi has a usable model/provider configuration.
+2. Pi has usable provider/model access.
 3. `pi_check()` reports pi installed.
-4. Hermes can call a pi bridge tool successfully.
-5. `pi-bootstrap` and `pi-reverse-engineering-flow` are visible to Hermes.
-6. `~/.hermes/pi-bridge-models.yaml` exists and contains no secrets.
+4. Hermes can invoke `pi_task` successfully.
+5. `pi-flow` is visible to Hermes.
+6. `~/.hermes/pi-flow.yaml` exists and contains no secrets.
+7. An explicit `pi_flow` request causes Hermes to load the generic flow skill.
