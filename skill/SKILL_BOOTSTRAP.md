@@ -1,7 +1,7 @@
 ---
 name: pi-bootstrap
 description: Install, configure, and verify pi plus the Hermes pi bridge in a safe repeatable order
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -21,6 +21,7 @@ Use this skill when pi or the bridge is not yet ready, or when the user asks Her
 - Never print, store, commit, or echo API keys/tokens.
 - If provider authentication requires a secret, ask the user to enter it through the provider/pi mechanism rather than sending it through Hermes.
 - Do not guess model IDs. If a model tier is blank, allow pi to use its default.
+- Preserve an existing working `pi` installation; only use the package installer when `pi` is missing.
 
 ## Stage 1 — Inspect
 
@@ -38,12 +39,14 @@ If pi exists, do not reinstall it just to normalize the environment.
 
 ## Stage 2 — Install pi if missing
 
-Require npm. Then:
+Require npm. Use the current package namespace:
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi --version
 ```
+
+The old `@mariozechner/pi-coding-agent` package was renamed/deprecated. Existing installations may continue to provide a valid `pi` binary; new installs should use `@earendil-works/pi-coding-agent`.
 
 Stop and report the exact error if installation fails.
 
@@ -57,7 +60,7 @@ ls -la ~/.pi/agent 2>/dev/null || true
 
 Do not `cat` auth files into the conversation.
 
-If pi is not configured for a provider/model, ask the user which provider they want and guide them through pi's supported authentication flow.
+If pi is not configured for a provider/model, ask the user which provider they want and guide them through pi's supported authentication flow. Prefer Pi's interactive `/login` mechanism for supported subscription/provider logins.
 
 ## Stage 4 — Install bridge
 
@@ -66,6 +69,8 @@ From the hermes-pi-bridge repository:
 ```bash
 bash install.sh
 ```
+
+If pi is missing and npm is available, `bash install.sh --install-pi` may perform Stage 2 and Stage 4 together.
 
 The installer should be idempotent.
 
