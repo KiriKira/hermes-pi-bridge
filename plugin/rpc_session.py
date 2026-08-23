@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -231,6 +230,8 @@ def start_session(
         cmd += ["--no-session"]
 
     try:
+        from .tools import _pi_subprocess_env
+
         process = subprocess.Popen(
             cmd,
             cwd=working_dir,
@@ -239,7 +240,7 @@ def start_session(
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
-            env={**os.environ},
+            env=_pi_subprocess_env(),
         )
         session._proc = process
     except Exception as exc:
