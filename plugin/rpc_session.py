@@ -281,7 +281,11 @@ def start_session(
     return session
 
 
-def _response_watcher(session: PiRpcSession, sent_at: float) -> None:
+def _response_watcher(
+    session: PiRpcSession,
+    sent_at: float,
+    completion_session_key: Optional[str],
+) -> None:
     from .tools import _ctx_ref
 
     timeout = 600.0
@@ -310,18 +314,25 @@ def _response_watcher(session: PiRpcSession, sent_at: float) -> None:
         header = f"[pi-bridge] Session `{session.session_id}` response ready. {model_info}".rstrip()
 
     duration = time.time() - sent_at
-    _ctx_ref.inject_message(
+    delivered = _ctx_ref.inject_message(
         f"{header}\n\n"
         f"pi output ({duration:.1f}s):\n{turn_text or '(no text output)'}\n\n"
         "Review the result before sending another instruction. Stop the session when the flow is complete.",
         role="user",
+        session_key=completion_session_key,
     )
+    if not delivered:
+        logger.warning(
+            "pi-rpc: completion for session %s could not be injected; output remains available via pi_session_read",
+            session.session_id,
+        )
 
 
 def send_message(
     session_id: str,
     message: str,
     streaming_behavior: str = "followUp",
+    completion_session_key: Optional[str] = None,
 ) -> dict:
     session = _sessions.get(session_id)
     if not session:
@@ -352,7 +363,7 @@ def send_message(
 
     threading.Thread(
         target=_response_watcher,
-        args=(session, sent_at),
+        args=(session, sent_at, completion_session_key),
         daemon=True,
         name=f"pi-watcher-{session_id}",
     ).start()
