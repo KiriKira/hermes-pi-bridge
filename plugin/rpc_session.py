@@ -1,8 +1,8 @@
 """Persistent pi RPC session manager.
 
-Spawns ``pi --mode rpc`` and communicates with JSON Lines over stdin/stdout.
-A successful ``response`` event for the ``prompt`` command is the definitive
-end-of-turn signal.
+Spawns ``pi --mode rpc`` and communicates with strict LF-delimited JSON Lines.
+Pi's ``response`` for a ``prompt`` only acknowledges acceptance; a turn is
+complete when Pi emits the documented ``agent_settled`` event.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ class PiRpcSession:
     created_at: float = field(default_factory=time.time)
     pi_session_file: Optional[str] = None
     error: Optional[str] = None
+    tier: Optional[str] = None
     model: Optional[str] = None
     provider: Optional[str] = None
 
@@ -82,92 +83,136 @@ def _find_pi() -> Optional[str]:
 
 
 def _send_rpc(session: PiRpcSession, command: dict) -> bool:
+    """Write one UTF-8 JSON object followed by a single LF delimiter."""
     if not session.is_alive:
         return False
     try:
-        session._proc.stdin.write(json.dumps(command) + "\n")
+        payload = (json.dumps(command, ensure_ascii=False) + "\n").encode("utf-8")
+        session._proc.stdin.write(payload)
         session._proc.stdin.flush()
         return True
-    except (BrokenPipeError, OSError) as exc:
+    except (BrokenPipeError, OSError, AttributeError) as exc:
         logger.warning("pi-rpc: write failed for %s: %s", session.session_id, exc)
         return False
 
 
+def _handle_event(session: PiRpcSession, event: dict) -> None:
+    """Apply one decoded Pi RPC event to session state."""
+    with session._lock:
+        session._event_buffer.append(event)
+        event_type = event.get("type", "")
+
+        if event_type == "message_update":
+            assistant_event = event.get("assistantMessageEvent") or {}
+            update_type = assistant_event.get("type", "")
+            if update_type == "text_delta":
+                session._turn_text += assistant_event.get("delta", "")
+            elif update_type == "text_end":
+                session._turn_text = assistant_event.get("content", "")
+
+        elif event_type == "message_start":
+            message = event.get("message") or {}
+            if message.get("role") == "assistant":
+                session.model = message.get("model") or session.model
+                session.provider = message.get("provider") or session.provider
+
+        elif event_type == "turn_end":
+            message = event.get("message") or {}
+            content = message.get("content") or []
+            texts = [
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            if texts:
+                session._turn_text = "\n".join(texts)
+            if session._turn_text:
+                if session._text_buffer:
+                    session._text_buffer += "\n\n"
+                session._text_buffer += session._turn_text
+
+        elif event_type == "response":
+            command = event.get("command", "")
+            success = bool(event.get("success", False))
+
+            if command == "get_state" and session.status == "starting":
+                if success:
+                    data = event.get("data") or {}
+                    model_info = data.get("model") or {}
+                    if isinstance(model_info, dict):
+                        session.provider = model_info.get("provider") or session.provider
+                        session.model = model_info.get("id") or session.model
+                    session.status = "ready"
+                else:
+                    session.status = "error"
+                    session.error = str(event.get("error") or "pi get_state failed")
+
+            elif command == "prompt":
+                # Pi documents this as prompt acceptance/rejection only. Success
+                # does NOT mean the agent is idle; wait for agent_settled.
+                if not success:
+                    session.error = str(event.get("error") or "pi prompt rejected")
+                    session._turn_done = True
+                    if session.is_alive:
+                        session.status = "ready"
+                    session._turn_event.set()
+
+            elif command == "get_last_assistant_text" and success:
+                text = (event.get("data") or {}).get("text") or ""
+                if text:
+                    session._turn_text = text
+
+        elif event_type == "agent_settled":
+            session._turn_done = True
+            if session.is_alive:
+                session.status = "ready"
+            session._turn_event.set()
+
+        elif event_type in ("error", "extension_error"):
+            session.error = str(
+                event.get("message")
+                or event.get("error")
+                or "pi RPC error"
+            )
+
+
 def _reader_loop(session: PiRpcSession) -> None:
+    """Read Pi's strict JSONL stream without treating Unicode separators as records."""
     process = session._proc
     while not session._stop_reader and session.is_alive:
         try:
-            line = process.stdout.readline()
-            if not line:
+            raw_line = process.stdout.readline()
+            if not raw_line:
                 break
-            line = line.strip()
-            if not line:
+
+            # Pi requires LF framing and accepts optional CRLF input. Binary
+            # readline splits only on LF, unlike generic Unicode line readers.
+            if raw_line.endswith(b"\n"):
+                raw_line = raw_line[:-1]
+            if raw_line.endswith(b"\r"):
+                raw_line = raw_line[:-1]
+            if not raw_line:
                 continue
+
             try:
+                line = raw_line.decode("utf-8")
                 event = json.loads(line)
-            except json.JSONDecodeError:
-                logger.debug("pi-rpc: ignored non-JSON output from %s", session.session_id)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.debug("pi-rpc: ignored malformed JSONL record from %s", session.session_id)
                 continue
 
-            with session._lock:
-                session._event_buffer.append(event)
-                event_type = event.get("type", "")
-
-                if event_type == "message_update":
-                    assistant_event = event.get("assistantMessageEvent") or {}
-                    update_type = assistant_event.get("type", "")
-                    if update_type == "text_delta":
-                        session._turn_text += assistant_event.get("delta", "")
-                    elif update_type == "text_end":
-                        session._turn_text = assistant_event.get("content", "")
-
-                elif event_type == "message_start":
-                    message = event.get("message") or {}
-                    if message.get("role") == "assistant":
-                        session.model = message.get("model") or session.model
-                        session.provider = message.get("provider") or session.provider
-
-                elif event_type == "turn_end":
-                    message = event.get("message") or {}
-                    content = message.get("content") or []
-                    texts = [item.get("text", "") for item in content if item.get("type") == "text"]
-                    if texts:
-                        session._turn_text = "\n".join(texts)
-                    if session._turn_text:
-                        if session._text_buffer:
-                            session._text_buffer += "\n\n"
-                        session._text_buffer += session._turn_text
-
-                elif event_type == "response":
-                    command = event.get("command", "")
-                    success = bool(event.get("success", False))
-                    if command == "get_state" and session.status == "starting":
-                        if success:
-                            session.status = "ready"
-                        else:
-                            session.status = "error"
-                            session.error = str(event.get("error") or "pi get_state failed")
-                    elif command == "prompt":
-                        if not success:
-                            session.error = str(event.get("error") or "pi prompt failed")
-                        session._turn_done = True
-                        session._turn_event.set()
-                    elif command == "get_last_assistant_text" and success:
-                        text = (event.get("data") or {}).get("text") or ""
-                        if text:
-                            session._turn_text = text
-
-                elif event_type == "error":
-                    session.error = str(event.get("message") or event.get("error") or "pi RPC error")
+            _handle_event(session, event)
 
         except Exception as exc:
             logger.warning("pi-rpc: reader failed for %s: %s", session.session_id, exc)
-            session.error = f"reader error: {type(exc).__name__}: {exc}"
+            with session._lock:
+                session.error = f"reader error: {type(exc).__name__}: {exc}"
             break
 
     if not session.is_alive and session.status not in ("closed", "error"):
-        session.status = "closed"
-        session._turn_event.set()
+        with session._lock:
+            session.status = "closed"
+            session._turn_event.set()
 
 
 def _terminate_process(session: PiRpcSession) -> None:
@@ -196,9 +241,14 @@ def start_session(
     append_system_prompt: Optional[str] = None,
     persist_session: bool = True,
     ready_timeout: float = 15.0,
+    tier: Optional[str] = None,
 ) -> PiRpcSession:
     session_id = str(uuid.uuid4())[:8]
-    session = PiRpcSession(session_id=session_id, working_dir=working_dir)
+    session = PiRpcSession(
+        session_id=session_id,
+        working_dir=working_dir,
+        tier=tier,
+    )
     _sessions[session_id] = session
 
     pi_bin = _find_pi()
@@ -225,7 +275,7 @@ def start_session(
     if persist_session:
         sessions_dir = Path.home() / ".pi" / "agent" / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
-        session.pi_session_file = str(sessions_dir / f"hermes-{session_id}.json")
+        session.pi_session_file = str(sessions_dir / f"hermes-{session_id}.jsonl")
         cmd += ["--session", session.pi_session_file]
     else:
         cmd += ["--no-session"]
@@ -237,8 +287,8 @@ def start_session(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
+            text=False,
+            bufsize=0,
             env={**os.environ},
         )
         session._proc = process
@@ -280,53 +330,17 @@ def start_session(
     return session
 
 
-def _response_watcher(session: PiRpcSession, sent_at: float) -> None:
-    from .tools import _ctx_ref
-
-    timeout = 600.0
-    completed = session._turn_event.wait(timeout=timeout)
-
-    with session._lock:
-        turn_text = session._turn_text
-        model = session.model
-        provider = session.provider
-        error = session.error
-
-    if session.is_alive and session.status != "error":
-        session.status = "ready"
-    elif not session.is_alive:
-        session.status = "closed"
-
-    if not _ctx_ref:
-        return
-
-    model_info = f"{provider}/{model}" if provider and model else (model or provider or "")
-    if not completed:
-        header = f"[pi-bridge] Session `{session.session_id}` timed out after {timeout:.0f}s."
-    elif error:
-        header = f"[pi-bridge] Session `{session.session_id}` completed with an RPC error: {error}"
-    else:
-        header = f"[pi-bridge] Session `{session.session_id}` response ready. {model_info}".rstrip()
-
-    duration = time.time() - sent_at
-    _ctx_ref.inject_message(
-        f"{header}\n\n"
-        f"pi output ({duration:.1f}s):\n{turn_text or '(no text output)'}\n\n"
-        "Review the result before sending another instruction. Stop the session when the flow is complete.",
-        role="user",
-    )
-
-
 def send_message(
     session_id: str,
     message: str,
-    streaming_behavior: str = "followUp",
+    wait_timeout: float = 900.0,
 ) -> dict:
+    """Send a prompt and wait until Pi emits ``agent_settled``."""
     session = _sessions.get(session_id)
     if not session:
         return {"error": f"Session {session_id!r} not found"}
     if session.status == "busy":
-        return {"error": f"Session {session_id!r} is busy; wait for the current response"}
+        return {"error": f"Session {session_id!r} is busy; inspect or wait for it to settle"}
     if session.status in ("closed", "error"):
         return {"error": f"Session {session_id!r} is {session.status}: {session.error or ''}".rstrip()}
     if not session.is_alive:
@@ -340,26 +354,54 @@ def send_message(
         session._turn_event.clear()
 
     session.status = "busy"
-    sent_at = time.time()
-    if not _send_rpc(session, {
-        "type": "prompt",
-        "message": message,
-        "streamingBehavior": streaming_behavior,
-    }):
+    started = time.time()
+    if not _send_rpc(session, {"type": "prompt", "message": message}):
         session.status = "ready"
         return {"error": f"Failed to send message to session {session_id!r}"}
 
-    threading.Thread(
-        target=_response_watcher,
-        args=(session, sent_at),
-        daemon=True,
-        name=f"pi-watcher-{session_id}",
-    ).start()
+    settled = session._turn_event.wait(timeout=max(0.1, wait_timeout))
+    duration = time.time() - started
+
+    with session._lock:
+        text = session._turn_text
+        error = session.error
+        done = session._turn_done
+        status = session.status
+        model = session.model
+        provider = session.provider
+
+    if not settled:
+        # The process keeps running. A later agent_settled event will move the
+        # session back to ready; callers can inspect with read/list meanwhile.
+        return {
+            "status": "timeout",
+            "session_id": session_id,
+            "text": text,
+            "turn_done": done,
+            "process_alive": session.is_alive,
+            "duration_seconds": round(duration, 1),
+            "message": "Timed out waiting for agent_settled; pi was not terminated.",
+        }
+
+    if status == "closed":
+        return {
+            "status": "failed",
+            "session_id": session_id,
+            "text": text,
+            "error": error or "pi process exited before the turn settled",
+            "duration_seconds": round(duration, 1),
+        }
 
     return {
-        "status": "responding",
+        "status": "failed" if error else "completed",
         "session_id": session_id,
-        "message": "Prompt sent. Wait for the pi-bridge completion notification before sending another prompt.",
+        "text": text,
+        "error": error,
+        "turn_done": done,
+        "duration_seconds": round(duration, 1),
+        "tier": session.tier,
+        "model": model,
+        "provider": provider,
     }
 
 
@@ -370,13 +412,18 @@ def read_output(session_id: str, full: bool = False) -> dict:
     with session._lock:
         text = session._text_buffer if full else session._turn_text
         event_count = len(session._event_buffer)
+        turn_done = session._turn_done
+        error = session.error
     return {
         "status": session.status,
         "text": text,
-        "turn_done": session._turn_done,
+        "turn_done": turn_done,
         "event_count": event_count,
         "process_alive": session.is_alive,
-        "error": session.error,
+        "error": error,
+        "tier": session.tier,
+        "model": session.model,
+        "provider": session.provider,
     }
 
 
@@ -400,6 +447,7 @@ def stop_session(session_id: str) -> dict:
         "session_id": session_id,
         "pi_session_file": session.pi_session_file,
         "duration_seconds": round(time.time() - session.created_at, 1),
+        "tier": session.tier,
         "model": session.model,
         "provider": session.provider,
     }
