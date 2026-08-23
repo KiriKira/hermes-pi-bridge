@@ -1,42 +1,63 @@
 # Hermes bootstrap entrypoint
 
-This is the file Hermes should read when setting up this repository on a machine that may not have pi or the bridge installed yet.
+This is the file Hermes should read when setting up `hermes-pi-bridge` on a machine/profile that may not have pi or the plugin installed yet.
 
 ## Goal
 
-Prepare a working Hermes -> pi bridge and make `pi_flow` available as the stable high-level workflow convention.
-
-After setup, a user should be able to say:
+Prepare a working Hermes -> pi bridge using Hermes' official plugin lifecycle. After setup, a user can say:
 
 ```text
 通过 pi_flow 去 <goal>
 ```
 
-Hermes should then load the `pi-flow` skill, create a goal-specific flow, delegate execution to pi, review evidence, and adapt the flow until the goal is verified or blocked.
+Hermes should load the bundled `pi-bridge:pi-flow` skill, create a goal-specific flow, delegate bounded execution to pi, review evidence, and adapt until the goal is verified or concretely blocked.
+
+## Important architecture facts
+
+Before installing anything, preserve these distinctions:
+
+- Hermes ACP, TUI gateway JSON-RPC, and HTTP APIs are **server-side interfaces for external programs to drive Hermes**.
+- Hermes' documented Pi-style RPC mapping maps Pi-like control concepts onto Hermes' TUI gateway; it does not make Hermes a generic Pi client.
+- Hermes' Codex app-server runtime is a first-party, Codex-specific external agent runtime. It is not a generic arbitrary-agent adapter.
+- `hermes-pi-bridge` remains a normal third-party Hermes plugin that launches pi and speaks pi's own RPC protocol.
+- A Hermes **profile** is an independent long-lived agent state/config boundary. `pi_flow` is a per-goal orchestration convention. Do not create/switch profiles merely because `pi_flow` was requested.
 
 ## Required order
 
-### 1. Inspect prerequisites
+### 1. Identify the target Hermes profile
+
+Determine which profile should own the plugin.
+
+Use the current/default profile unless the user explicitly wants a separate long-lived specialist with independent config, memory, SOUL, sessions, skills/plugins, gateway state, or model defaults.
+
+Useful checks:
+
+```bash
+hermes profile
+hermes profile list
+```
+
+If a named profile is intentionally selected, use `hermes -p <profile> ...` for all plugin install/doctor commands below.
+
+### 2. Inspect prerequisites
 
 Run:
 
 ```bash
+command -v hermes || true
 command -v node || true
 command -v npm || true
-command -v python3 || true
-command -v hermes || command -v hermes-cli || true
 command -v pi || true
 ```
 
 Requirements:
 
 - Hermes Agent is already installed.
-- Python 3.9+ is available for the bridge and installer helpers.
 - Node.js/npm are needed only when pi is not already installed.
 
-### 2. Install pi only when missing
+### 3. Install pi only when missing
 
-If `pi --version` works, keep the existing installation.
+If `pi --version` succeeds, keep the existing installation.
 
 Otherwise run:
 
@@ -45,67 +66,42 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi --version
 ```
 
-Do not replace an existing working pi installation merely to normalize versions.
+Do not replace a working installation just to normalize versions.
 
-### 3. Configure pi model/provider access
+### 4. Configure pi authentication/model access
 
-Pi owns its provider authentication and model configuration under `~/.pi/agent/` and through its supported login/provider mechanisms.
-
-Inspect configuration presence without printing secrets:
+Pi owns its provider authentication/model configuration. Inspect only presence/metadata; never print auth-file contents or secrets into chat/logs/commits.
 
 ```bash
 ls -la ~/.pi/agent 2>/dev/null || true
 pi --version
 ```
 
-If pi still needs authentication, use pi's supported authentication flow. Never print API keys, tokens, or auth-file contents into chat, logs, commits, or this repository.
+If pi still needs authentication, use pi's supported setup/login mechanism.
 
-The bridge is model-agnostic. It passes `provider`, `model`, and `thinking` only when Hermes intentionally supplies them.
+### 5. Install and enable the plugin using Hermes itself
 
-### 4. Install the bridge
-
-From this repository run:
+Default profile:
 
 ```bash
-bash install.sh
+hermes plugins install KiriKira/hermes-pi-bridge --enable
+hermes plugins doctor pi-bridge --ci
 ```
 
-Or let the installer install pi too when it is missing:
+Named profile:
 
 ```bash
-bash install.sh --install-pi
+hermes -p <profile> plugins install KiriKira/hermes-pi-bridge --enable
+hermes -p <profile> plugins doctor pi-bridge --ci
 ```
 
-The installer provides:
+Do not manually symlink the plugin, patch `toolsets`, or edit `plugins.enabled` by hand unless the official plugin command is unavailable and the user explicitly chooses a manual recovery path.
 
-- `~/.hermes/plugins/pi-bridge` — the bridge plugin;
-- `~/.hermes/skills/software-development/pi-flow/SKILL.md` — the only operational skill;
-- `~/.hermes/pi-flow.yaml` — model-routing preferences, created only when absent;
-- `~/.hermes/pi-flows/` — optional library for reusable flows.
+Hermes' plugin manager should own clone/install metadata, security scan, enablement, update semantics, and profile scoping.
 
-It also enables the `pi_bridge` toolset when it can identify the relevant Hermes config entry safely.
+### 6. Restart the Hermes session and verify the bridge
 
-### 5. Configure optional model routing
-
-Read:
-
-```text
-~/.hermes/pi-flow.yaml
-```
-
-It defines three semantic tiers:
-
-- `fast` — cheap/high-throughput work that is easy to verify;
-- `standard` — normal implementation and debugging;
-- `deep` — difficult ambiguous reasoning where stronger models may materially improve the result.
-
-Provider/model fields are intentionally blank by default. Blank fields mean: use pi's configured default. Do not invent model IDs.
-
-Hermes should start with the cheapest tier that plausibly fits and escalate only when there is evidence that stronger reasoning is needed.
-
-### 6. Restart Hermes and verify
-
-Restart Hermes so the plugin and skill are loaded. Then call:
+Start a fresh Hermes session in the target profile, then run/call:
 
 ```text
 pi_check()
@@ -115,7 +111,8 @@ Minimum expected state:
 
 - `installed: true`;
 - a pi version is reported;
-- the `pi_bridge` toolset loads without an import error.
+- plugin registration succeeds;
+- the bundled skill is available as `pi-bridge:pi-flow`.
 
 Then run a harmless one-shot smoke test in a disposable directory:
 
@@ -135,13 +132,27 @@ Ask Hermes something containing the explicit token `pi_flow`, for example:
 通过 pi_flow 去检查这个项目的测试为什么失败
 ```
 
-Hermes must load:
+Hermes should load:
 
 ```text
-skill_view("pi-flow")
+skill_view("pi-bridge:pi-flow")
 ```
 
-The skill will instruct Hermes to create a flow for that specific goal rather than loading a fixed domain workflow.
+Then it should create the minimum flow needed for that specific goal rather than loading a fixed domain workflow or switching profiles automatically.
+
+## Profiles: when they are appropriate
+
+Use a dedicated profile only when persistent isolation/specialization is desired, for example:
+
+```bash
+hermes profile create re --description "Reverse-engineering and protocol research specialist using pi workers"
+re setup
+re plugins install KiriKira/hermes-pi-bridge --enable
+```
+
+That gives the specialist its own Hermes config, memory, SOUL, sessions, skills/plugins, gateway state, and model defaults. It does **not** sandbox filesystem access by itself; set `terminal.cwd` and an appropriate terminal/sandbox backend separately when isolation matters.
+
+Inside that profile, still use `pi_flow` for each concrete goal.
 
 ## Completion criteria
 
@@ -149,8 +160,8 @@ Bootstrap is complete when:
 
 1. `pi --version` works.
 2. Pi has usable provider/model access.
-3. `pi_check()` reports pi installed.
-4. Hermes can invoke `pi_task` successfully.
-5. `pi-flow` is visible to Hermes.
-6. `~/.hermes/pi-flow.yaml` exists and contains no secrets.
-7. An explicit `pi_flow` request causes Hermes to load the generic flow skill.
+3. `hermes plugins doctor pi-bridge --ci` succeeds for the target profile.
+4. `pi_check()` reports pi installed.
+5. Hermes can invoke `pi_task` successfully.
+6. `pi-bridge:pi-flow` is visible.
+7. An explicit `pi_flow` request loads the namespaced skill without changing profiles automatically.
