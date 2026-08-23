@@ -21,4 +21,4 @@ provides_tools:
   - pi_session_list
 provides_hooks:
   - pre_llm_call
-  - on_session_end
+  - on_session_finalize
