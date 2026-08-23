@@ -2,13 +2,14 @@
 
 The plugin exposes a small set of pi execution primitives and one explicit
 high-level convention: when the user asks to use ``pi_flow``, Hermes loads the
-``pi-flow`` skill and creates a goal-specific workflow at runtime.
+plugin-bundled ``pi-flow`` skill and creates a goal-specific workflow at runtime.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def _is_pi_flow_request(message: str) -> bool:
 _PI_FLOW_REMINDER = """\
 [pi-bridge] PI_FLOW REQUEST DETECTED.
 The user explicitly asked to use pi_flow.
-Before executing the goal, call skill_view("pi-flow") and follow that skill.
+Before executing the goal, call skill_view("pi-bridge:pi-flow") and follow that skill.
 Create a goal-specific flow at runtime; do not substitute a fixed domain flow.
 Hermes owns planning, routing, review, and verification. pi executes delegated work."""
 
@@ -57,7 +58,7 @@ def register(ctx) -> None:
         toolset="pi_bridge",
         schema=PI_CHECK_SCHEMA,
         handler=pi_check,
-        description="Check pi installation and configuration",
+        description="Check pi installation and bridge routing configuration",
         emoji="🔍",
     )
     ctx.register_tool(
@@ -81,7 +82,7 @@ def register(ctx) -> None:
         toolset="pi_bridge",
         schema=PI_SESSION_SEND_SCHEMA,
         handler=pi_session_send,
-        description="Send one instruction to a pi RPC session",
+        description="Send one instruction and wait for the pi session to settle",
         emoji="⌨️",
     )
     ctx.register_tool(
@@ -109,9 +110,16 @@ def register(ctx) -> None:
         emoji="📋",
     )
 
+    skill_path = Path(__file__).parent / "skills" / "pi-flow" / "SKILL.md"
+    ctx.register_skill(
+        "pi-flow",
+        skill_path,
+        "Create and run a goal-specific workflow with Hermes supervising pi",
+    )
+
     ctx.register_hook("pre_llm_call", _pre_llm_call_hook)
     ctx.register_hook("on_session_end", _on_session_end_hook)
-    logger.info("pi-bridge: plugin loaded — 7 tools registered")
+    logger.info("pi-bridge: plugin loaded — 7 tools and pi-flow skill registered")
 
 
 def _pre_llm_call_hook(**kwargs) -> str | None:
