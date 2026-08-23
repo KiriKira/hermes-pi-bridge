@@ -1,7 +1,7 @@
 ---
 name: pi-flow
 description: Create and run a goal-specific workflow with Hermes as supervisor and pi as execution worker
-version: 1.1.0
+version: 1.2.0
 author: hermes-pi-bridge
 license: MIT
 metadata:
@@ -69,21 +69,30 @@ For a persistent session:
 5. send another instruction only when needed
 6. `pi_session_stop` when the phase/flow is complete
 
-Never stack prompts into a busy session.
+Never stack prompts into a busy session. Persistent pi sessions are allowed to survive ordinary Hermes turns; they are cleaned up explicitly by the flow or when the Hermes conversation is finalized/reset.
 
-## 4. Route model effort without inventing model IDs
+## 4. Route model effort through the current Hermes profile
 
-Hermes should decide how much model capability a phase deserves, but the bridge does not hardcode providers or model names.
+Hermes decides how much capability a phase deserves. The bridge resolves the semantic tier through **this profile's** `pi-bridge` plugin settings, so different profiles may use different Pi model/cost policies without changing this skill.
+
+At the start of a flow, call `pi_check` when the routing is not already known. Its `effort_routing` field reports the effective `fast` / `standard` / `deep` mappings for the current profile.
 
 - **fast** — high-volume, mechanical, easily checked work: search, inventory, extraction, formatting, known commands, straightforward data collection.
 - **standard** — normal implementation/debugging: scripts, adapters, ordinary code changes, tests, clear multi-file work.
 - **deep** — reserve for ambiguous architecture/protocol reasoning, several plausible hypotheses, subtle repeated failures, cross-system correlation, or high-impact decisions that are expensive to redo.
 
-Start with the cheapest capability that plausibly fits. Escalate only on material signals such as contradictory evidence, low confidence on an important conclusion, repeated failure after obvious execution errors are corrected, or unresolved competing hypotheses.
+Normally pass only the semantic tier:
 
-If the user/profile has explicitly established provider/model mappings, pass those mappings to `pi_task` or `pi_session_start`. Otherwise omit `provider` and `model` and let pi use its configured default. Never invent provider/model identifiers.
+```text
+pi_task(..., effort="fast")
+pi_session_start(..., effort="standard")
+```
 
-Thinking depth may be adjusted independently when useful; do not equate every hard-looking task with the most expensive model.
+The bridge applies profile-scoped `provider`, `model`, and `thinking` defaults. An explicit `provider`, `model`, or `thinking` passed on a particular call overrides that tier's configured value.
+
+Start with the cheapest tier that plausibly fits. Escalate only on material signals such as contradictory evidence, low confidence on an important conclusion, repeated failure after obvious execution errors are corrected, or unresolved competing hypotheses. A bad path, missing binary, dependency error, or malformed command is an execution problem and is not by itself a reason to buy a stronger model.
+
+If provider/model mappings are blank, pi uses its own configured default. Never invent provider/model identifiers merely to satisfy a tier label.
 
 ## 5. Give pi bounded phase prompts
 
@@ -138,7 +147,9 @@ The initial flow is a hypothesis about the work, not a contract.
 
 Hermes profiles isolate an entire agent's config, memory, skills, sessions, plugins, gateway state, and personality. Do **not** create or switch profiles merely because the user said `pi_flow`.
 
-A dedicated profile is appropriate only when the user wants a persistent specialist with separate state — for example a long-lived reverse-engineering/research agent with its own memory, model defaults, terminal cwd, and plugin set. In that case install/enable `pi-bridge` in that profile and still use `pi_flow` inside the profile for per-goal orchestration.
+A dedicated profile is appropriate only when the user wants a persistent specialist with separate state — for example a long-lived reverse-engineering/research agent with its own memory, model defaults, terminal cwd, plugin settings, and plugin set. In that case install/enable `pi-bridge` in that profile, configure its effort mappings there, and still use `pi_flow` inside the profile for each concrete goal.
+
+Profiles do not sandbox filesystem access by themselves; use Hermes terminal working-directory/sandbox settings when isolation matters.
 
 ## 9. Finish cleanly
 
