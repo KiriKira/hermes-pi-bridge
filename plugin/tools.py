@@ -14,12 +14,68 @@ logger = logging.getLogger(__name__)
 
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
 DEFAULT_SYNC_TIMEOUT = 900
+_TIER_DEFAULT_THINKING = {
+    "fast": "minimal",
+    "standard": "medium",
+    "deep": "high",
+}
 _ctx_ref = None
 
 
 def set_context_ref(ctx) -> None:
     global _ctx_ref
     _ctx_ref = ctx
+
+
+def _plugin_config(key: str, default=None):
+    """Read this plugin's Hermes-owned settings namespace."""
+    if _ctx_ref is None or not hasattr(_ctx_ref, "get_config"):
+        return default
+    try:
+        return _ctx_ref.get_config(key, default=default)
+    except Exception as exc:
+        logger.warning("pi-bridge: failed to read plugin setting %s: %s", key, exc)
+        return default
+
+
+def _resolve_execution_options(args_dict: dict) -> dict:
+    """Apply an optional semantic tier without overriding explicit arguments."""
+    resolved = dict(args_dict)
+    tier = str(resolved.get("tier") or "").strip().lower()
+    if not tier:
+        resolved["_resolved_tier"] = None
+        return resolved
+    if tier not in _TIER_DEFAULT_THINKING:
+        raise ValueError(f"Unknown pi tier: {tier}")
+
+    for field in ("provider", "model"):
+        if not resolved.get(field):
+            value = _plugin_config(f"{tier}_{field}", "")
+            if isinstance(value, str) and value.strip():
+                resolved[field] = value.strip()
+
+    if not resolved.get("thinking"):
+        value = _plugin_config(
+            f"{tier}_thinking",
+            _TIER_DEFAULT_THINKING[tier],
+        )
+        if isinstance(value, str) and value.strip():
+            resolved["thinking"] = value.strip()
+
+    resolved["_resolved_tier"] = tier
+    return resolved
+
+
+def _routing_snapshot() -> dict:
+    snapshot = {}
+    for tier, fallback_thinking in _TIER_DEFAULT_THINKING.items():
+        snapshot[tier] = {
+            "provider": _plugin_config(f"{tier}_provider", "") or "",
+            "model": _plugin_config(f"{tier}_model", "") or "",
+            "thinking": _plugin_config(f"{tier}_thinking", fallback_thinking)
+            or fallback_thinking,
+        }
+    return snapshot
 
 
 def _find_pi() -> Optional[str]:
@@ -125,7 +181,11 @@ def _format_output(parsed: dict) -> str:
 def pi_check(args: dict, **kwargs) -> str:
     """Report whether pi is installed without exposing credential contents."""
     pi_bin = _find_pi()
-    info: dict = {"installed": bool(pi_bin), "binary": pi_bin}
+    info: dict = {
+        "installed": bool(pi_bin),
+        "binary": pi_bin,
+        "routing": _routing_snapshot(),
+    }
 
     if pi_bin:
         try:
@@ -166,8 +226,13 @@ def pi_task(args: dict, **kwargs) -> str:
             "fix": f"npm install -g --ignore-scripts {PI_PACKAGE}",
         })
 
-    timeout = int(args.get("timeout") or DEFAULT_SYNC_TIMEOUT)
-    cmd = _pi_cmd(pi_bin, args, extra_flags=["--mode", "json"])
+    try:
+        resolved = _resolve_execution_options(args)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
+    timeout = int(resolved.get("timeout") or DEFAULT_SYNC_TIMEOUT)
+    cmd = _pi_cmd(pi_bin, resolved, extra_flags=["--mode", "json"])
     started = time.time()
 
     try:
@@ -187,24 +252,26 @@ def pi_task(args: dict, **kwargs) -> str:
     result_text = _format_output(parsed) or (process.stdout or "").strip()
     duration_ms = int((time.time() - started) * 1000)
 
+    common = {
+        "result": result_text,
+        "duration_ms": duration_ms,
+        "model": parsed.get("model"),
+        "provider": parsed.get("provider"),
+        "tier": resolved.get("_resolved_tier"),
+    }
+
     if process.returncode != 0:
         return json.dumps({
             "status": "failed",
-            "result": result_text,
+            **common,
             "stderr": (process.stderr or "")[-1000:],
             "returncode": process.returncode,
-            "duration_ms": duration_ms,
-            "model": parsed.get("model"),
-            "provider": parsed.get("provider"),
         }, ensure_ascii=False)
 
     return json.dumps({
         "status": "completed",
-        "result": result_text,
+        **common,
         "num_turns": parsed["num_turns"],
-        "duration_ms": duration_ms,
-        "model": parsed.get("model"),
-        "provider": parsed.get("provider"),
     }, ensure_ascii=False)
 
 
@@ -220,16 +287,22 @@ def pi_session_start(args: dict, **kwargs) -> str:
     if active_session_count() >= 3:
         return json.dumps({"error": "Maximum 3 concurrent RPC sessions. Stop one first."})
 
+    try:
+        resolved = _resolve_execution_options(args)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+
     session = start_session(
         working_dir=working_dir,
-        model=args.get("model"),
-        provider=args.get("provider"),
-        thinking=args.get("thinking"),
-        tools=args.get("tools"),
-        system_prompt=args.get("system_prompt"),
-        append_system_prompt=args.get("append_system_prompt"),
-        persist_session=bool(args.get("persist_session", True)),
-        ready_timeout=float(args.get("ready_timeout", 15)),
+        model=resolved.get("model"),
+        provider=resolved.get("provider"),
+        thinking=resolved.get("thinking"),
+        tools=resolved.get("tools"),
+        system_prompt=resolved.get("system_prompt"),
+        append_system_prompt=resolved.get("append_system_prompt"),
+        persist_session=bool(resolved.get("persist_session", True)),
+        ready_timeout=float(resolved.get("ready_timeout", 15)),
+        tier=resolved.get("_resolved_tier"),
     )
 
     if session.status == "error":
@@ -244,6 +317,9 @@ def pi_session_start(args: dict, **kwargs) -> str:
         "session_id": session.session_id,
         "working_dir": working_dir,
         "pi_session_file": session.pi_session_file,
+        "tier": session.tier,
+        "model": session.model,
+        "provider": session.provider,
     }, ensure_ascii=False)
 
 
@@ -257,11 +333,14 @@ def pi_session_send(args: dict, **kwargs) -> str:
 
     from .rpc_session import send_message
 
-    return json.dumps(send_message(
-        session_id=session_id,
-        message=message,
-        streaming_behavior=args.get("streaming_behavior", "followUp"),
-    ), ensure_ascii=False)
+    return json.dumps(
+        send_message(
+            session_id=session_id,
+            message=message,
+            wait_timeout=float(args.get("wait_timeout", 900)),
+        ),
+        ensure_ascii=False,
+    )
 
 
 def pi_session_read(args: dict, **kwargs) -> str:
@@ -271,10 +350,13 @@ def pi_session_read(args: dict, **kwargs) -> str:
 
     from .rpc_session import read_output
 
-    return json.dumps(read_output(
-        session_id=session_id,
-        full=bool(args.get("full", False)),
-    ), ensure_ascii=False)
+    return json.dumps(
+        read_output(
+            session_id=session_id,
+            full=bool(args.get("full", False)),
+        ),
+        ensure_ascii=False,
+    )
 
 
 def pi_session_stop(args: dict, **kwargs) -> str:
@@ -298,6 +380,7 @@ def pi_session_list(args: dict, **kwargs) -> str:
                 "status": session.status,
                 "working_dir": session.working_dir,
                 "pi_session_file": session.pi_session_file,
+                "tier": session.tier,
                 "model": session.model,
                 "provider": session.provider,
                 "duration_seconds": round(time.time() - session.created_at, 1),
