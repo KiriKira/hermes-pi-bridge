@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 PI_PACKAGE = "@earendil-works/pi-coding-agent"
 DEFAULT_SYNC_TIMEOUT = 900
+_EFFORTS = ("fast", "standard", "deep")
+_DEFAULT_THINKING = {"fast": "minimal", "standard": "medium", "deep": "high"}
+_VALID_THINKING = {"off", "minimal", "low", "medium", "high", "xhigh"}
 _ctx_ref = None
 
 
@@ -42,6 +45,64 @@ def _pi_subprocess_env() -> dict[str, str]:
             "falling back to the host environment. Update Hermes for filtered child environments."
         )
         return os.environ.copy()
+
+
+def _plugin_config(key: str, default=None):
+    if _ctx_ref is None or not hasattr(_ctx_ref, "get_config"):
+        return default
+    try:
+        return _ctx_ref.get_config(key, default)
+    except Exception as exc:
+        logger.warning("pi-bridge: failed to read plugin setting %s: %s", key, exc)
+        return default
+
+
+def _routing_for_effort(effort: str) -> dict[str, str]:
+    if effort not in _EFFORTS:
+        return {}
+
+    provider = str(_plugin_config(f"{effort}_provider", "") or "").strip()
+    model = str(_plugin_config(f"{effort}_model", "") or "").strip()
+    thinking = str(
+        _plugin_config(f"{effort}_thinking", _DEFAULT_THINKING[effort])
+        or _DEFAULT_THINKING[effort]
+    ).strip().lower()
+    if thinking not in _VALID_THINKING:
+        logger.warning(
+            "pi-bridge: invalid %s_thinking=%r; using %s",
+            effort,
+            thinking,
+            _DEFAULT_THINKING[effort],
+        )
+        thinking = _DEFAULT_THINKING[effort]
+
+    result = {"thinking": thinking}
+    if provider:
+        result["provider"] = provider
+    if model:
+        result["model"] = model
+    return result
+
+
+def _apply_effort_defaults(args_dict: dict) -> dict:
+    """Resolve a semantic effort tier through profile-scoped plugin settings.
+
+    Explicit provider/model/thinking parameters always win. The effort tier is
+    therefore a convenient policy input, not an override of a deliberate call.
+    """
+    effective = dict(args_dict)
+    effort = str(effective.get("effort") or "").strip().lower()
+    if not effort:
+        return effective
+    if effort not in _EFFORTS:
+        logger.warning("pi-bridge: ignoring unknown effort tier %r", effort)
+        return effective
+
+    configured = _routing_for_effort(effort)
+    for key in ("provider", "model", "thinking"):
+        if not effective.get(key) and configured.get(key):
+            effective[key] = configured[key]
+    return effective
 
 
 def _find_pi() -> Optional[str]:
@@ -145,7 +206,7 @@ def _format_output(parsed: dict) -> str:
 
 
 def pi_check(args: dict, **kwargs) -> str:
-    """Report whether pi is installed without exposing credential contents."""
+    """Report pi availability and this profile's semantic routing policy."""
     pi_bin = _find_pi()
     info: dict = {"installed": bool(pi_bin), "binary": pi_bin}
 
@@ -168,6 +229,10 @@ def pi_check(args: dict, **kwargs) -> str:
         info["auth_config_present"] = auth_file.exists()
     else:
         info["install_command"] = f"npm install -g --ignore-scripts {PI_PACKAGE}"
+
+    info["effort_routing"] = {
+        effort: _routing_for_effort(effort) for effort in _EFFORTS
+    }
 
     from .rpc_session import active_session_count
 
@@ -192,8 +257,9 @@ def pi_task(args: dict, **kwargs) -> str:
             "fix": f"npm install -g --ignore-scripts {PI_PACKAGE}",
         })
 
-    timeout = int(args.get("timeout") or DEFAULT_SYNC_TIMEOUT)
-    cmd = _pi_cmd(pi_bin, args, extra_flags=["--mode", "json"])
+    effective = _apply_effort_defaults(args)
+    timeout = int(effective.get("timeout") or DEFAULT_SYNC_TIMEOUT)
+    cmd = _pi_cmd(pi_bin, effective, extra_flags=["--mode", "json"])
     started = time.time()
 
     try:
@@ -221,6 +287,7 @@ def pi_task(args: dict, **kwargs) -> str:
             "stderr": (process.stderr or "")[-1000:],
             "returncode": process.returncode,
             "duration_ms": duration_ms,
+            "effort": effective.get("effort"),
             "model": parsed.get("model"),
             "provider": parsed.get("provider"),
         }, ensure_ascii=False)
@@ -230,6 +297,7 @@ def pi_task(args: dict, **kwargs) -> str:
         "result": result_text,
         "num_turns": parsed["num_turns"],
         "duration_ms": duration_ms,
+        "effort": effective.get("effort"),
         "model": parsed.get("model"),
         "provider": parsed.get("provider"),
     }, ensure_ascii=False)
@@ -247,16 +315,17 @@ def pi_session_start(args: dict, **kwargs) -> str:
     if active_session_count() >= 3:
         return json.dumps({"error": "Maximum 3 concurrent RPC sessions. Stop one first."})
 
+    effective = _apply_effort_defaults(args)
     session = start_session(
         working_dir=working_dir,
-        model=args.get("model"),
-        provider=args.get("provider"),
-        thinking=args.get("thinking"),
-        tools=args.get("tools"),
-        system_prompt=args.get("system_prompt"),
-        append_system_prompt=args.get("append_system_prompt"),
-        persist_session=bool(args.get("persist_session", True)),
-        ready_timeout=float(args.get("ready_timeout", 15)),
+        model=effective.get("model"),
+        provider=effective.get("provider"),
+        thinking=effective.get("thinking"),
+        tools=effective.get("tools"),
+        system_prompt=effective.get("system_prompt"),
+        append_system_prompt=effective.get("append_system_prompt"),
+        persist_session=bool(effective.get("persist_session", True)),
+        ready_timeout=float(effective.get("ready_timeout", 15)),
     )
 
     if session.status == "error":
@@ -271,6 +340,7 @@ def pi_session_start(args: dict, **kwargs) -> str:
         "session_id": session.session_id,
         "working_dir": working_dir,
         "pi_session_file": session.pi_session_file,
+        "effort": effective.get("effort"),
     }, ensure_ascii=False)
 
 
