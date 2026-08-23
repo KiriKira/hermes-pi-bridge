@@ -1,7 +1,12 @@
+manifest_version: 2
+api_version: 1
 name: pi-bridge
-version: 1.1.0
-description: "Hermes bridge for delegating execution to pi and orchestrating pi_flow workflows"
+version: 1.2.0
+description: "Hermes plugin for supervising work executed by pi through one-shot and RPC primitives"
 author: hermes-pi-bridge
+license: MIT
+homepage: https://github.com/KiriKira/hermes-pi-bridge
+tags: [pi, orchestration, coding-agent, rpc]
 provides_tools:
   - pi_check
   - pi_task
@@ -13,3 +18,40 @@ provides_tools:
 provides_hooks:
   - pre_llm_call
   - on_session_end
+config_schema:
+  fast_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for fast-tier work; blank uses pi's configured default"
+  fast_model:
+    type: str
+    default: ""
+    description: "Optional pi model for fast-tier work; blank uses pi's configured default"
+  fast_thinking:
+    type: str
+    default: minimal
+    description: "Pi thinking level for fast-tier work"
+  standard_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for standard-tier work; blank uses pi's configured default"
+  standard_model:
+    type: str
+    default: ""
+    description: "Optional pi model for standard-tier work; blank uses pi's configured default"
+  standard_thinking:
+    type: str
+    default: medium
+    description: "Pi thinking level for standard-tier work"
+  deep_provider:
+    type: str
+    default: ""
+    description: "Optional pi provider for deep-tier work; blank uses pi's configured default"
+  deep_model:
+    type: str
+    default: ""
+    description: "Optional pi model for deep-tier work; blank uses pi's configured default"
+  deep_thinking:
+    type: str
+    default: high
+    description: "Pi thinking level for deep-tier work"
