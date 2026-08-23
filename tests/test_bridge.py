@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from plugin import _is_pi_flow_request
+from plugin import _PI_FLOW_REMINDER, _is_pi_flow_request
 from plugin.tools import _parse_json_stream
 
 
@@ -19,6 +19,10 @@ class PiFlowTriggerTests(unittest.TestCase):
     def test_unrelated_coding_request_does_not_trigger(self):
         self.assertFalse(_is_pi_flow_request("fix the failing tests"))
         self.assertFalse(_is_pi_flow_request("run pi_task on this file"))
+
+    def test_reminder_uses_namespaced_plugin_skill(self):
+        self.assertIn('skill_view("pi-bridge:pi-flow")', _PI_FLOW_REMINDER)
+        self.assertNotIn('skill_view("pi-flow")', _PI_FLOW_REMINDER)
 
 
 class OneShotParserTests(unittest.TestCase):
